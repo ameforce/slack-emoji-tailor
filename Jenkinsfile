@@ -94,6 +94,7 @@ pipeline {
             env.IMAGE_REPOSITORY = valueOrDefault(params.LOCAL_IMAGE_REPOSITORY, 'slack-emoji-tailor')
           }
 
+          env.GIT_COMMIT_RESOLVED = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
           env.GIT_COMMIT_SHORT = sh(returnStdout: true, script: 'git rev-parse --short=12 HEAD').trim()
           env.IMAGE_TAG = "${env.DEPLOY_ENVIRONMENT}-${env.GIT_COMMIT_SHORT}-${env.BUILD_NUMBER}"
           env.IMAGE_REF = "${env.IMAGE_REPOSITORY}:${env.IMAGE_TAG}"
@@ -104,7 +105,7 @@ pipeline {
             error('Deploy IMAGE_REF must be immutable and must not be a moving latest alias.')
           }
 
-          writeFile file: 'image-ref.txt', text: "IMAGE_REF=${env.IMAGE_REF}\nMOVING_ALIAS_REF=${env.MOVING_ALIAS_REF}\nIMAGE_DISTRIBUTION_MODE=${env.IMAGE_DISTRIBUTION_MODE_RESOLVED}\nDEPLOY_ENVIRONMENT=${env.DEPLOY_ENVIRONMENT}\nGIT_COMMIT=${env.GIT_COMMIT}\nBRANCH=${env.DEPLOY_BRANCH}\n"
+          writeFile file: 'image-ref.txt', text: "IMAGE_REF=${env.IMAGE_REF}\nMOVING_ALIAS_REF=${env.MOVING_ALIAS_REF}\nIMAGE_DISTRIBUTION_MODE=${env.IMAGE_DISTRIBUTION_MODE_RESOLVED}\nDEPLOY_ENVIRONMENT=${env.DEPLOY_ENVIRONMENT}\nGIT_COMMIT=${env.GIT_COMMIT_RESOLVED}\nBRANCH=${env.DEPLOY_BRANCH}\n"
           echo "Resolved ${env.DEPLOY_ENVIRONMENT} immutable image ref: ${env.IMAGE_REF}"
         }
       }
@@ -147,7 +148,7 @@ set -euo pipefail
 : "${MOVING_ALIAS_REF:?MOVING_ALIAS_REF is required}"
 docker build \
   --pull \
-  --label "org.opencontainers.image.revision=${GIT_COMMIT}" \
+  --label "org.opencontainers.image.revision=${GIT_COMMIT_RESOLVED}" \
   --label "org.opencontainers.image.source=${JOB_URL:-jenkins}" \
   -t "$IMAGE_REF" \
   -t "$MOVING_ALIAS_REF" \
