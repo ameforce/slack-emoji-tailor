@@ -64,6 +64,14 @@ pipeline {
           if (branchName.startsWith('refs/heads/')) {
             branchName = branchName.substring('refs/heads/'.length())
           }
+          if (branchName == 'manual' || branchName == env.JOB_BASE_NAME) {
+            def jobBaseName = (env.JOB_BASE_NAME ?: '').trim()
+            if (jobBaseName.endsWith('-main')) {
+              branchName = 'main'
+            } else if (jobBaseName.endsWith('-develop')) {
+              branchName = 'develop'
+            }
+          }
           env.DEPLOY_BRANCH = branchName ?: 'manual'
 
           env.DEPLOY_ENVIRONMENT = env.DEPLOY_BRANCH == 'main' ? 'prod' : 'dev'
