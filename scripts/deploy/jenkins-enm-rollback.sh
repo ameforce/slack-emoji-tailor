@@ -45,6 +45,7 @@ REMOTE_DOCKER_CONFIG=${REMOTE_DOCKER_CONFIG:-${DEPLOY_PATH}/.docker-config-pull}
 REGISTRY_URL=${REGISTRY_URL:-}
 REGISTRY_PULL_USERNAME=${REGISTRY_PULL_USERNAME:-}
 REGISTRY_PULL_PASSWORD=${REGISTRY_PULL_PASSWORD:-}
+SKIP_IMAGE_PULL=${SKIP_IMAGE_PULL:-false}
 HEALTH_RETRIES=${HEALTH_RETRIES:-12}
 HEALTH_SLEEP_SECONDS=${HEALTH_SLEEP_SECONDS:-5}
 HEALTH_TIMEOUT_SECONDS=${HEALTH_TIMEOUT_SECONDS:-5}
@@ -76,6 +77,7 @@ Rollback dry-run preview:
   public health: ${PUBLIC_HEALTHCHECK_URL:-<expected as separate Jenkins public check>}
   lock file: ${DEPLOY_LOCK_FILE}
   marker dir: ${DEPLOY_MARKER_DIR}
+  skip image pull: ${SKIP_IMAGE_PULL}
 DRYRUN
   exit 0
 fi
@@ -136,6 +138,7 @@ remote_args=(
   "$HEALTH_SLEEP_SECONDS"
   "$HEALTH_TIMEOUT_SECONDS"
   "$HAS_PULL_PASSWORD"
+  "$SKIP_IMAGE_PULL"
 )
 quoted_remote_args=()
 for arg in "${remote_args[@]}"; do
@@ -146,8 +149,8 @@ log "starting remote rollback on ${SSH_TARGET}"
 remote_run "bash -s -- ${quoted_remote_args[*]}" <<'REMOTE_SCRIPT'
 set -Eeuo pipefail
 
-if [ "$#" -ne 14 ]; then
-  printf '[rollback:remote] ERROR: expected 14 args, got %s\n' "$#" >&2
+if [ "$#" -ne 15 ]; then
+  printf '[rollback:remote] ERROR: expected 15 args, got %s\n' "$#" >&2
   exit 2
 fi
 
@@ -165,6 +168,7 @@ health_retries=${11}
 health_sleep_seconds=${12}
 health_timeout_seconds=${13}
 has_pull_auth=${14}
+skip_image_pull=${15}
 
 log_remote() {
   printf '[rollback:remote] %s\n' "$*" >&2
@@ -175,19 +179,26 @@ fail_remote() {
   exit 1
 }
 
+truthy_remote() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|y|Y|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 is_immutable_image_ref() {
   local ref=$1
   local last_path tag
   case "$ref" in
     *@sha256:*) return 0 ;;
-    ""|latest|dev-latest) return 1 ;;
+    ""|latest|dev-latest|prod-latest) return 1 ;;
   esac
   last_path=${ref##*/}
   case "$last_path" in
     *:*)
       tag=${last_path##*:}
       case "$tag" in
-        ""|latest|dev-latest) return 1 ;;
+        ""|latest|dev-latest|prod-latest) return 1 ;;
         *) return 0 ;;
       esac
       ;;
@@ -287,7 +298,11 @@ if [ "$has_pull_auth" = "1" ]; then
   export DOCKER_CONFIG="$remote_docker_config"
 fi
 
-docker compose -p "$compose_project" -f "$compose_file" --env-file "$env_file" pull
+if truthy_remote "$skip_image_pull"; then
+  docker image inspect "$rollback_image_ref" >/dev/null
+else
+  docker compose -p "$compose_project" -f "$compose_file" --env-file "$env_file" pull
+fi
 docker compose -p "$compose_project" -f "$compose_file" --env-file "$env_file" up -d
 if ! health_check "$local_health_url"; then
   capture_evidence "$marker_dir" "failed-rollback"

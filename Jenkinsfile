@@ -16,20 +16,22 @@ pipeline {
 
     string(name: 'DEPLOY_HOST', defaultValue: 'enmsoftware.com', description: 'Target ENM server SSH host.')
     string(name: 'DEPLOY_SSH_USER', defaultValue: 'ameforce', description: 'Target ENM server SSH user.')
-    string(name: 'DEPLOY_PATH', defaultValue: '/home/ameforce/slack-emoji-tailor-dev', description: 'Remote deploy directory on enm-server.')
+    string(name: 'DEPLOY_PATH', defaultValue: '', description: 'Optional override. Auto: main -> /home/ameforce/slack-emoji-tailor-prod, non-main -> /home/ameforce/slack-emoji-tailor-dev.')
     string(name: 'DEPLOY_SSH_CREDENTIALS_ID', defaultValue: 'enm-server-ssh-key', description: 'Jenkins SSH private key credential ID for enm-server.')
     string(name: 'DEPLOY_SSH_OPTS', defaultValue: '-o BatchMode=yes -o StrictHostKeyChecking=accept-new', description: 'Additional ssh/scp options passed to deploy scripts.')
 
-    string(name: 'REGISTRY_URL', defaultValue: 'registry.example.invalid', description: 'Docker registry hostname for push/login, for example ghcr.io or registry.example.com.')
-    string(name: 'REGISTRY_IMAGE', defaultValue: 'enm/slack-emoji-tailor', description: 'Registry image path without tag. Combined with REGISTRY_URL and immutable build tag.')
-    string(name: 'REGISTRY_CREDENTIALS_ID', defaultValue: 'slack-emoji-tailor-registry-push', description: 'Jenkins username/password credential ID for registry push.')
-    string(name: 'REGISTRY_PULL_CREDENTIALS_ID', defaultValue: '', description: 'Optional Jenkins username/password credential ID passed to the remote deploy script for isolated docker login on enm-server.')
+    choice(name: 'IMAGE_DISTRIBUTION_MODE', choices: ['remote-build', 'registry'], description: 'remote-build builds the image on the Docker-capable Jenkins agent that is also the deploy host; registry pushes/pulls through REGISTRY_* credentials.')
+    string(name: 'LOCAL_IMAGE_REPOSITORY', defaultValue: 'slack-emoji-tailor', description: 'Local Docker image repository used when IMAGE_DISTRIBUTION_MODE=remote-build.')
+    string(name: 'REGISTRY_URL', defaultValue: '', description: 'Docker registry hostname for registry mode, for example ghcr.io or registry.example.com.')
+    string(name: 'REGISTRY_IMAGE', defaultValue: 'enm/slack-emoji-tailor', description: 'Registry image path without tag. Combined with REGISTRY_URL and immutable build tag in registry mode.')
+    string(name: 'REGISTRY_CREDENTIALS_ID', defaultValue: '', description: 'Jenkins username/password credential ID for registry push in registry mode.')
+    string(name: 'REGISTRY_PULL_CREDENTIALS_ID', defaultValue: '', description: 'Optional Jenkins username/password credential ID passed to the remote deploy script for isolated docker login on enm-server in registry mode.')
 
-    string(name: 'DEPLOY_APP_PORT', defaultValue: '18082', description: 'Localhost-only port on enm-server for reverse proxy target.')
-    string(name: 'PUBLIC_HEALTHCHECK_URL', defaultValue: 'https://dev.emoji.enmsoftware.com/healthz', description: 'Externally checked public health URL. TLS verification remains enabled.')
-    string(name: 'LOCAL_HEALTHCHECK_URL', defaultValue: 'http://127.0.0.1:18082/healthz', description: 'Server-local health URL used by the deploy script. Leave consistent with DEPLOY_APP_PORT.')
-    string(name: 'DEPLOY_COMPOSE_PROJECT', defaultValue: 'slack-emoji-tailor-dev', description: 'Remote docker compose project name.')
-    string(name: 'DEPLOY_ALLOWED_BRANCHES', defaultValue: 'develop', description: 'Comma-separated branches allowed to deploy. Empty allows any branch; manual builds are allowed.')
+    string(name: 'DEPLOY_APP_PORT', defaultValue: '', description: 'Optional override. Auto: main -> 3100, non-main -> 18082.')
+    string(name: 'PUBLIC_HEALTHCHECK_URL', defaultValue: '', description: 'Optional override. Auto: main -> https://emoji.enmsoftware.com/healthz, non-main -> https://dev.emoji.enmsoftware.com/healthz.')
+    string(name: 'LOCAL_HEALTHCHECK_URL', defaultValue: '', description: 'Optional override. Auto: http://127.0.0.1:${DEPLOY_APP_PORT}/healthz.')
+    string(name: 'DEPLOY_COMPOSE_PROJECT', defaultValue: '', description: 'Optional override. Auto: main -> slack-emoji-tailor-prod, non-main -> slack-emoji-tailor-dev.')
+    string(name: 'DEPLOY_ALLOWED_BRANCHES', defaultValue: 'main,develop', description: 'Comma-separated branches allowed to deploy. Empty allows any branch; manual builds are allowed.')
     string(name: 'DEPLOY_HEALTHCHECK_TIMEOUT_SECONDS', defaultValue: '120', description: 'Maximum local health wait budget for the deploy script.')
     string(name: 'DEPLOY_HEALTHCHECK_INTERVAL_SECONDS', defaultValue: '5', description: 'Local health retry interval for the deploy script.')
     string(name: 'PUBLIC_HEALTHCHECK_TIMEOUT_SECONDS', defaultValue: '15', description: 'curl --max-time budget for the public health check.')
@@ -55,10 +57,6 @@ pipeline {
       steps {
         script {
           requireParam('BUILD_AGENT_LABEL', params.BUILD_AGENT_LABEL)
-          requireParam('REGISTRY_URL', params.REGISTRY_URL)
-          requireParam('REGISTRY_IMAGE', params.REGISTRY_IMAGE)
-          requireParam('REGISTRY_CREDENTIALS_ID', params.REGISTRY_CREDENTIALS_ID)
-
           def branchName = (env.BRANCH_NAME ?: env.GIT_BRANCH ?: env.GIT_LOCAL_BRANCH ?: env.CHANGE_BRANCH ?: env.JOB_BASE_NAME ?: 'manual').trim()
           if (branchName.startsWith('origin/')) {
             branchName = branchName.substring('origin/'.length())
@@ -68,28 +66,46 @@ pipeline {
           }
           env.DEPLOY_BRANCH = branchName ?: 'manual'
 
-          def registryUrl = params.REGISTRY_URL.trim().replaceAll('/+$', '')
-          def registryImage = params.REGISTRY_IMAGE.trim().replaceAll('^/+', '')
-          env.IMAGE_REPOSITORY = "${registryUrl}/${registryImage}"
+          env.DEPLOY_ENVIRONMENT = env.DEPLOY_BRANCH == 'main' ? 'prod' : 'dev'
+          def prodTarget = env.DEPLOY_ENVIRONMENT == 'prod'
+          env.EFFECTIVE_DEPLOY_HOST = valueOrDefault(params.DEPLOY_HOST, 'enmsoftware.com')
+          env.EFFECTIVE_DEPLOY_SSH_USER = valueOrDefault(params.DEPLOY_SSH_USER, 'ameforce')
+          env.EFFECTIVE_DEPLOY_PATH = valueOrDefault(params.DEPLOY_PATH, prodTarget ? '/home/ameforce/slack-emoji-tailor-prod' : '/home/ameforce/slack-emoji-tailor-dev')
+          env.EFFECTIVE_DEPLOY_APP_PORT = valueOrDefault(params.DEPLOY_APP_PORT, prodTarget ? '3100' : '18082')
+          env.EFFECTIVE_DEPLOY_COMPOSE_PROJECT = valueOrDefault(params.DEPLOY_COMPOSE_PROJECT, prodTarget ? 'slack-emoji-tailor-prod' : 'slack-emoji-tailor-dev')
+          env.PUBLIC_HEALTHCHECK_URL_RESOLVED = valueOrDefault(params.PUBLIC_HEALTHCHECK_URL, prodTarget ? 'https://emoji.enmsoftware.com/healthz' : 'https://dev.emoji.enmsoftware.com/healthz')
+          env.LOCAL_HEALTHCHECK_URL_RESOLVED = valueOrDefault(params.LOCAL_HEALTHCHECK_URL, "http://127.0.0.1:${env.EFFECTIVE_DEPLOY_APP_PORT}/healthz")
+
+          def imageMode = valueOrDefault(params.IMAGE_DISTRIBUTION_MODE, 'remote-build')
+          if (!(imageMode in ['remote-build', 'registry'])) {
+            error("Unsupported IMAGE_DISTRIBUTION_MODE=${imageMode}.")
+          }
+          env.IMAGE_DISTRIBUTION_MODE_RESOLVED = imageMode
+          env.SKIP_IMAGE_PULL_RESOLVED = imageMode == 'remote-build' ? 'true' : 'false'
+
+          if (imageMode == 'registry') {
+            requireParam('REGISTRY_URL', params.REGISTRY_URL)
+            requireParam('REGISTRY_IMAGE', params.REGISTRY_IMAGE)
+            requireParam('REGISTRY_CREDENTIALS_ID', params.REGISTRY_CREDENTIALS_ID)
+            def registryUrl = params.REGISTRY_URL.trim().replaceAll('/+$', '')
+            def registryImage = params.REGISTRY_IMAGE.trim().replaceAll('^/+', '')
+            env.IMAGE_REPOSITORY = "${registryUrl}/${registryImage}"
+          } else {
+            env.IMAGE_REPOSITORY = valueOrDefault(params.LOCAL_IMAGE_REPOSITORY, 'slack-emoji-tailor')
+          }
+
           env.GIT_COMMIT_SHORT = sh(returnStdout: true, script: 'git rev-parse --short=12 HEAD').trim()
-          env.IMAGE_TAG = "${env.GIT_COMMIT_SHORT}-${env.BUILD_NUMBER}"
+          env.IMAGE_TAG = "${env.DEPLOY_ENVIRONMENT}-${env.GIT_COMMIT_SHORT}-${env.BUILD_NUMBER}"
           env.IMAGE_REF = "${env.IMAGE_REPOSITORY}:${env.IMAGE_TAG}"
-          env.DEV_LATEST_REF = "${env.IMAGE_REPOSITORY}:dev-latest"
+          env.MOVING_ALIAS_REF = "${env.IMAGE_REPOSITORY}:${env.DEPLOY_ENVIRONMENT}-latest"
           env.PUBLIC_HEALTH_FAILED = 'false'
 
-          if (env.IMAGE_REF.endsWith(':dev-latest')) {
-            error('Deploy IMAGE_REF must be immutable and must not be dev-latest.')
+          if (env.IMAGE_REF ==~ /.*:(latest|dev-latest|prod-latest)$/) {
+            error('Deploy IMAGE_REF must be immutable and must not be a moving latest alias.')
           }
 
-          def localHealth = params.LOCAL_HEALTHCHECK_URL?.trim()
-          if (!localHealth || localHealth.contains('${DEPLOY_APP_PORT}')) {
-            localHealth = "http://127.0.0.1:${params.DEPLOY_APP_PORT}/healthz"
-          }
-          env.LOCAL_HEALTHCHECK_URL_RESOLVED = localHealth
-          env.PUBLIC_HEALTHCHECK_URL_RESOLVED = params.PUBLIC_HEALTHCHECK_URL.trim()
-
-          writeFile file: 'image-ref.txt', text: "IMAGE_REF=${env.IMAGE_REF}\nDEV_LATEST_REF=${env.DEV_LATEST_REF}\nGIT_COMMIT=${env.GIT_COMMIT}\nBRANCH=${env.DEPLOY_BRANCH}\n"
-          echo "Resolved immutable image ref: ${env.IMAGE_REF}"
+          writeFile file: 'image-ref.txt', text: "IMAGE_REF=${env.IMAGE_REF}\nMOVING_ALIAS_REF=${env.MOVING_ALIAS_REF}\nIMAGE_DISTRIBUTION_MODE=${env.IMAGE_DISTRIBUTION_MODE_RESOLVED}\nDEPLOY_ENVIRONMENT=${env.DEPLOY_ENVIRONMENT}\nGIT_COMMIT=${env.GIT_COMMIT}\nBRANCH=${env.DEPLOY_BRANCH}\n"
+          echo "Resolved ${env.DEPLOY_ENVIRONMENT} immutable image ref: ${env.IMAGE_REF}"
         }
       }
     }
@@ -99,6 +115,12 @@ pipeline {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 python3 --version
+if ! command -v uv >/dev/null 2>&1; then
+  python3 -m venv .jenkins-uv
+  . .jenkins-uv/bin/activate
+  python -m pip install --upgrade pip uv
+fi
+PATH="$PWD/.jenkins-uv/bin:$PATH"
 uv --version
 docker version
 docker buildx version
@@ -110,6 +132,7 @@ docker buildx version
       steps {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
+PATH="$PWD/.jenkins-uv/bin:$PATH"
 uv sync --frozen --dev
 uv run pytest -q
 '''
@@ -121,32 +144,35 @@ uv run pytest -q
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 : "${IMAGE_REF:?IMAGE_REF is required}"
-: "${DEV_LATEST_REF:?DEV_LATEST_REF is required}"
+: "${MOVING_ALIAS_REF:?MOVING_ALIAS_REF is required}"
 docker build \
   --pull \
   --label "org.opencontainers.image.revision=${GIT_COMMIT}" \
   --label "org.opencontainers.image.source=${JOB_URL:-jenkins}" \
   -t "$IMAGE_REF" \
-  -t "$DEV_LATEST_REF" \
+  -t "$MOVING_ALIAS_REF" \
   .
 '''
       }
     }
 
     stage('Push Image') {
+      when {
+        expression { return env.IMAGE_DISTRIBUTION_MODE_RESOLVED == 'registry' }
+      }
       steps {
         withCredentials([usernamePassword(credentialsId: params.REGISTRY_CREDENTIALS_ID, usernameVariable: 'REGISTRY_USERNAME', passwordVariable: 'REGISTRY_PASSWORD')]) {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
 : "${REGISTRY_URL:?REGISTRY_URL is required}"
 : "${IMAGE_REF:?IMAGE_REF is required}"
-: "${DEV_LATEST_REF:?DEV_LATEST_REF is required}"
+: "${MOVING_ALIAS_REF:?MOVING_ALIAS_REF is required}"
 DOCKER_CONFIG_DIR="$(mktemp -d)"
 trap 'rm -rf "$DOCKER_CONFIG_DIR"' EXIT
 export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
 printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY_URL" --username "$REGISTRY_USERNAME" --password-stdin >/dev/null
 docker push "$IMAGE_REF"
-docker push "$DEV_LATEST_REF"
+docker push "$MOVING_ALIAS_REF"
 docker image inspect --format='{{index .RepoDigests 0}}' "$IMAGE_REF" > image-digest.txt 2>/dev/null || true
 docker logout "$REGISTRY_URL" >/dev/null 2>&1 || true
 '''
@@ -160,19 +186,19 @@ docker logout "$REGISTRY_URL" >/dev/null 2>&1 || true
       }
       steps {
         script {
-          requireParam('DEPLOY_HOST', params.DEPLOY_HOST)
-          requireParam('DEPLOY_SSH_USER', params.DEPLOY_SSH_USER)
-          requireParam('DEPLOY_PATH', params.DEPLOY_PATH)
+          requireParam('DEPLOY_HOST', env.EFFECTIVE_DEPLOY_HOST)
+          requireParam('DEPLOY_SSH_USER', env.EFFECTIVE_DEPLOY_SSH_USER)
+          requireParam('DEPLOY_PATH', env.EFFECTIVE_DEPLOY_PATH)
           requireParam('DEPLOY_SSH_CREDENTIALS_ID', params.DEPLOY_SSH_CREDENTIALS_ID)
-          requireParam('DEPLOY_APP_PORT', params.DEPLOY_APP_PORT)
-          requireParam('DEPLOY_COMPOSE_PROJECT', params.DEPLOY_COMPOSE_PROJECT)
-          requireParam('PUBLIC_HEALTHCHECK_URL', params.PUBLIC_HEALTHCHECK_URL)
+          requireParam('DEPLOY_APP_PORT', env.EFFECTIVE_DEPLOY_APP_PORT)
+          requireParam('DEPLOY_COMPOSE_PROJECT', env.EFFECTIVE_DEPLOY_COMPOSE_PROJECT)
+          requireParam('PUBLIC_HEALTHCHECK_URL', env.PUBLIC_HEALTHCHECK_URL_RESOLVED)
           requireParam('PUBLIC_CHECK_AGENT_LABEL', params.PUBLIC_CHECK_AGENT_LABEL)
 
-          if (!(params.DEPLOY_APP_PORT ==~ /^[0-9]+$/)) {
+          if (!(env.EFFECTIVE_DEPLOY_APP_PORT ==~ /^[0-9]+$/)) {
             error('DEPLOY_APP_PORT must be numeric.')
           }
-          def port = params.DEPLOY_APP_PORT.toInteger()
+          def port = env.EFFECTIVE_DEPLOY_APP_PORT.toInteger()
           if (port < 1024 || port > 65535) {
             error('DEPLOY_APP_PORT must be in the non-privileged TCP port range 1024-65535.')
           }
@@ -196,13 +222,15 @@ set -euo pipefail
 mkdir -p deploy-evidence
 cat > deploy-preview.txt <<PREVIEW
 image_ref=${IMAGE_REF}
-dev_latest_ref=${DEV_LATEST_REF}
+moving_alias_ref=${MOVING_ALIAS_REF}
+image_distribution_mode=${IMAGE_DISTRIBUTION_MODE_RESOLVED}
+deploy_environment=${DEPLOY_ENVIRONMENT}
 deploy_dry_run=${DEPLOY_DRY_RUN}
-target=${DEPLOY_SSH_USER}@${DEPLOY_HOST}
-deploy_path=${DEPLOY_PATH}
+target=${EFFECTIVE_DEPLOY_SSH_USER}@${EFFECTIVE_DEPLOY_HOST}
+deploy_path=${EFFECTIVE_DEPLOY_PATH}
 compose_file=${DEPLOY_COMPOSE_FILE}
-compose_project=${DEPLOY_COMPOSE_PROJECT}
-app_host_port=${DEPLOY_APP_PORT}
+compose_project=${EFFECTIVE_DEPLOY_COMPOSE_PROJECT}
+app_host_port=${EFFECTIVE_DEPLOY_APP_PORT}
 local_health_url=${LOCAL_HEALTHCHECK_URL_RESOLVED}
 public_health_url=${PUBLIC_HEALTHCHECK_URL_RESOLVED}
 public_check_agent_label=${PUBLIC_CHECK_AGENT_LABEL}
@@ -233,18 +261,19 @@ cat deploy-preview.txt
           withCredentials(bindings) {
             withEnv([
               "IMAGE_REF=${env.IMAGE_REF}",
-              "APP_HOST_PORT=${params.DEPLOY_APP_PORT}",
-              "DEPLOY_HOST=${params.DEPLOY_HOST}",
-              "DEPLOY_SSH_USER=${params.DEPLOY_SSH_USER}",
-              "DEPLOY_PATH=${params.DEPLOY_PATH}",
+              "APP_HOST_PORT=${env.EFFECTIVE_DEPLOY_APP_PORT}",
+              "DEPLOY_HOST=${env.EFFECTIVE_DEPLOY_HOST}",
+              "DEPLOY_SSH_USER=${env.EFFECTIVE_DEPLOY_SSH_USER}",
+              "DEPLOY_PATH=${env.EFFECTIVE_DEPLOY_PATH}",
               "DEPLOY_SSH_OPTS=${params.DEPLOY_SSH_OPTS}",
               "DEPLOY_COMPOSE_FILE=${env.DEPLOY_COMPOSE_FILE}",
-              "DEPLOY_COMPOSE_PROJECT=${params.DEPLOY_COMPOSE_PROJECT}",
+              "DEPLOY_COMPOSE_PROJECT=${env.EFFECTIVE_DEPLOY_COMPOSE_PROJECT}",
               "LOCAL_HEALTHCHECK_URL=${env.LOCAL_HEALTHCHECK_URL_RESOLVED}",
               "DEPLOY_HEALTHCHECK_TIMEOUT_SECONDS=${params.DEPLOY_HEALTHCHECK_TIMEOUT_SECONDS}",
               "DEPLOY_HEALTHCHECK_INTERVAL_SECONDS=${params.DEPLOY_HEALTHCHECK_INTERVAL_SECONDS}",
               "REGISTRY_URL=${params.REGISTRY_URL}",
               "REGISTRY_PULL_CREDENTIALS_ID=${params.REGISTRY_PULL_CREDENTIALS_ID}",
+              "SKIP_IMAGE_PULL=${env.SKIP_IMAGE_PULL_RESOLVED}",
               'DEPLOY_DRY_RUN=false'
             ]) {
               sh '''#!/usr/bin/env bash
@@ -287,7 +316,7 @@ fi
         }
       }
       environment {
-        PUBLIC_HEALTHCHECK_URL = "${params.PUBLIC_HEALTHCHECK_URL}"
+        PUBLIC_HEALTHCHECK_URL = "${env.PUBLIC_HEALTHCHECK_URL_RESOLVED}"
         PUBLIC_HEALTHCHECK_TIMEOUT_SECONDS = "${params.PUBLIC_HEALTHCHECK_TIMEOUT_SECONDS}"
         PUBLIC_CHECK_FORBIDDEN_HOST_PATTERNS = "${params.PUBLIC_CHECK_FORBIDDEN_HOST_PATTERNS}"
       }
@@ -339,17 +368,18 @@ curl --fail --show-error --silent --location --max-time "$PUBLIC_HEALTHCHECK_TIM
 
           withCredentials(bindings) {
             withEnv([
-              "DEPLOY_HOST=${params.DEPLOY_HOST}",
-              "DEPLOY_SSH_USER=${params.DEPLOY_SSH_USER}",
-              "DEPLOY_PATH=${params.DEPLOY_PATH}",
+              "DEPLOY_HOST=${env.EFFECTIVE_DEPLOY_HOST}",
+              "DEPLOY_SSH_USER=${env.EFFECTIVE_DEPLOY_SSH_USER}",
+              "DEPLOY_PATH=${env.EFFECTIVE_DEPLOY_PATH}",
               "DEPLOY_SSH_OPTS=${params.DEPLOY_SSH_OPTS}",
               "DEPLOY_COMPOSE_FILE=${env.DEPLOY_COMPOSE_FILE}",
-              "DEPLOY_COMPOSE_PROJECT=${params.DEPLOY_COMPOSE_PROJECT}",
-              "APP_HOST_PORT=${params.DEPLOY_APP_PORT}",
+              "DEPLOY_COMPOSE_PROJECT=${env.EFFECTIVE_DEPLOY_COMPOSE_PROJECT}",
+              "APP_HOST_PORT=${env.EFFECTIVE_DEPLOY_APP_PORT}",
               "LOCAL_HEALTHCHECK_URL=${env.LOCAL_HEALTHCHECK_URL_RESOLVED}",
               "PUBLIC_HEALTHCHECK_URL=${env.PUBLIC_HEALTHCHECK_URL_RESOLVED}",
               "REGISTRY_URL=${params.REGISTRY_URL}",
-              "REGISTRY_PULL_CREDENTIALS_ID=${params.REGISTRY_PULL_CREDENTIALS_ID}"
+              "REGISTRY_PULL_CREDENTIALS_ID=${params.REGISTRY_PULL_CREDENTIALS_ID}",
+              "SKIP_IMAGE_PULL=${env.SKIP_IMAGE_PULL_RESOLVED}"
             ]) {
               sh '''#!/usr/bin/env bash
 set -euo pipefail
@@ -392,6 +422,11 @@ bash "$ROLLBACK_SCRIPT" | tee deploy-evidence/rollback-after-public-health.txt
       echo 'Jenkins deployment pipeline finished. See archived image/deploy/health/rollback evidence for proof.'
     }
   }
+}
+
+String valueOrDefault(Object value, String fallback) {
+  def normalized = value == null ? '' : value.toString().trim()
+  return normalized ? normalized : fallback
 }
 
 void requireParam(String name, Object value) {

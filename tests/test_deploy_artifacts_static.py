@@ -60,6 +60,8 @@ def test_jenkinsfile_declares_required_parameters_and_core_stages() -> None:
             "DEPLOY_SSH_USER",
             "DEPLOY_PATH",
             "DEPLOY_SSH_CREDENTIALS_ID",
+            "IMAGE_DISTRIBUTION_MODE",
+            "LOCAL_IMAGE_REPOSITORY",
             "REGISTRY_URL",
             "REGISTRY_IMAGE",
             "REGISTRY_CREDENTIALS_ID",
@@ -113,17 +115,37 @@ def test_jenkinsfile_fails_fast_on_build_agent_tooling_and_uses_immutable_image_
 
     _assert_contains_all(
         jenkinsfile,
-        ["uv run pytest -q", "docker build", "docker push", "IMAGE_REF"],
-        label="test/build/push flow",
+        ["uv run pytest -q", "docker build", "docker push", "IMAGE_REF", "MOVING_ALIAS_REF"],
+        label="test/build/optional-push flow",
     )
 
     forbidden_image_ref_assignments = re.findall(
-        r"(?m)^\s*(?:env\.)?IMAGE_REF\s*=\s*['\"][^'\"]*dev-latest[^'\"]*['\"]",
+        r"(?m)^\s*(?:env\.)?IMAGE_REF\s*=\s*['\"][^'\"]*(?:latest|dev-latest|prod-latest)[^'\"]*['\"]",
         jenkinsfile,
     )
     assert not forbidden_image_ref_assignments, (
-        "Deployment IMAGE_REF must be immutable; dev-latest may be pushed only as a "
-        "convenience alias"
+        "Deployment IMAGE_REF must be immutable; moving latest aliases may be pushed "
+        "only as convenience aliases"
+    )
+
+
+def test_jenkinsfile_routes_main_to_prod_and_non_main_to_dev_targets() -> None:
+    _require_implementation_lanes_integrated()
+    jenkinsfile = _read("Jenkinsfile")
+
+    _assert_contains_all(
+        jenkinsfile,
+        [
+            "env.DEPLOY_BRANCH == 'main' ? 'prod' : 'dev'",
+            "/home/ameforce/slack-emoji-tailor-prod",
+            "/home/ameforce/slack-emoji-tailor-dev",
+            "'3100' : '18082'",
+            "https://emoji.enmsoftware.com/healthz",
+            "https://dev.emoji.enmsoftware.com/healthz",
+            "slack-emoji-tailor-prod",
+            "slack-emoji-tailor-dev",
+        ],
+        label="branch-aware deploy routing",
     )
 
 
@@ -150,12 +172,13 @@ def test_public_health_runs_on_external_agent_not_through_enm_ssh() -> None:
         )
 
 
-def test_compose_deploy_file_uses_registry_image_localhost_port_and_healthcheck() -> None:
+def test_compose_deploy_file_uses_image_localhost_port_and_healthcheck() -> None:
     _require_implementation_lanes_integrated()
     compose = _read("docker-compose.dev.deploy.yml")
 
     assert "${IMAGE_REF}" in compose, "deploy compose must use the immutable IMAGE_REF variable"
     assert not re.search(r"(?m)^\s*build\s*:", compose), "deploy compose must not build on enm-server"
+    assert "container_name:" not in compose, "dev/prod compose projects must not share a fixed container name"
     assert "127.0.0.1" in compose, "deploy compose must bind app port to localhost only"
     assert "${APP_HOST_PORT:-18082}" in compose, "deploy compose must default APP_HOST_PORT to 18082"
     assert re.search(r"127\.0\.0\.1:\$\{APP_HOST_PORT:-18082\}:8000", compose), (
@@ -180,6 +203,7 @@ def test_deploy_scripts_have_required_safety_guards_and_no_proxy_mutations() -> 
             "DOCKER_CONFIG",
             "IMAGE_REF",
             "NO_PREVIOUS_IMAGE_AVAILABLE",
+            "SKIP_IMAGE_PULL",
             "/healthz",
         ],
         label="deploy script guardrails",

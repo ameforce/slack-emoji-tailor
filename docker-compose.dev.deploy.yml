@@ -1,7 +1,6 @@
 services:
   slack-emoji-tailor:
     image: ${IMAGE_REF}
-    container_name: slack-emoji-tailor-dev
     ports:
       - "127.0.0.1:${APP_HOST_PORT:-18082}:8000"
     restart: unless-stopped

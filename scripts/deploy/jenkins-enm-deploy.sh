@@ -34,14 +34,14 @@ is_immutable_image_ref() {
   local last_path tag
   case "$ref" in
     *@sha256:*) return 0 ;;
-    ""|latest|dev-latest) return 1 ;;
+    ""|latest|dev-latest|prod-latest) return 1 ;;
   esac
   last_path=${ref##*/}
   case "$last_path" in
     *:*)
       tag=${last_path##*:}
       case "$tag" in
-        ""|latest|dev-latest) return 1 ;;
+        ""|latest|dev-latest|prod-latest) return 1 ;;
         *) return 0 ;;
       esac
       ;;
@@ -54,7 +54,7 @@ require_env DEPLOY_SSH_USER
 require_env DEPLOY_PATH
 require_env IMAGE_REF
 
-is_immutable_image_ref "$IMAGE_REF" || fail "IMAGE_REF must be an immutable tag or digest, not latest/dev-latest: ${IMAGE_REF}"
+is_immutable_image_ref "$IMAGE_REF" || fail "IMAGE_REF must be an immutable tag or digest, not a latest/dev-latest/prod-latest alias: ${IMAGE_REF}"
 
 DEPLOY_COMPOSE_FILE=${DEPLOY_COMPOSE_FILE:-docker-compose.dev.deploy.yml}
 LOCAL_COMPOSE_FILE=${LOCAL_COMPOSE_FILE:-$DEPLOY_COMPOSE_FILE}
@@ -80,6 +80,7 @@ if [ -z "${HEALTH_RETRIES:-}" ]; then
   fi
 fi
 SKIP_COMPOSE_UPLOAD=${SKIP_COMPOSE_UPLOAD:-false}
+SKIP_IMAGE_PULL=${SKIP_IMAGE_PULL:-false}
 SSH_TARGET=${DEPLOY_SSH_USER}@${DEPLOY_HOST}
 SSH_OPTS=${SSH_OPTS:-${DEPLOY_SSH_OPTS:-}}
 DEPLOY_SSH_KEY=${DEPLOY_SSH_KEY:-}
@@ -107,6 +108,7 @@ Deploy dry-run preview:
   lock file: ${DEPLOY_LOCK_FILE}
   marker dir: ${DEPLOY_MARKER_DIR}
   remote docker config: ${REMOTE_DOCKER_CONFIG}
+  skip image pull: ${SKIP_IMAGE_PULL}
 DRYRUN
   exit 0
 fi
@@ -161,6 +163,7 @@ remote_args=(
   "$HEALTH_SLEEP_SECONDS"
   "$HEALTH_TIMEOUT_SECONDS"
   "$HAS_PULL_PASSWORD"
+  "$SKIP_IMAGE_PULL"
 )
 quoted_remote_args=()
 for arg in "${remote_args[@]}"; do
@@ -171,8 +174,8 @@ log "starting remote deploy on ${SSH_TARGET}"
 remote_run "bash -s -- ${quoted_remote_args[*]}" <<'REMOTE_SCRIPT'
 set -Eeuo pipefail
 
-if [ "$#" -ne 15 ]; then
-  printf '[deploy:remote] ERROR: expected 15 args, got %s\n' "$#" >&2
+if [ "$#" -ne 16 ]; then
+  printf '[deploy:remote] ERROR: expected 16 args, got %s\n' "$#" >&2
   exit 2
 fi
 
@@ -191,6 +194,7 @@ health_retries=${12}
 health_sleep_seconds=${13}
 health_timeout_seconds=${14}
 has_pull_auth=${15}
+skip_image_pull=${16}
 
 log_remote() {
   printf '[deploy:remote] %s\n' "$*" >&2
@@ -201,19 +205,26 @@ fail_remote() {
   exit 1
 }
 
+truthy_remote() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|y|Y|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 is_immutable_image_ref() {
   local ref=$1
   local last_path tag
   case "$ref" in
     *@sha256:*) return 0 ;;
-    ""|latest|dev-latest) return 1 ;;
+    ""|latest|dev-latest|prod-latest) return 1 ;;
   esac
   last_path=${ref##*/}
   case "$last_path" in
     *:*)
       tag=${last_path##*:}
       case "$tag" in
-        ""|latest|dev-latest) return 1 ;;
+        ""|latest|dev-latest|prod-latest) return 1 ;;
         *) return 0 ;;
       esac
       ;;
@@ -298,7 +309,11 @@ rollback_or_down() {
 
   log_remote "attempting rollback to ${previous_image_ref} after: ${reason}"
   write_env_with_image "$env_file" "$previous_image_ref"
-  docker compose -p "$compose_project" -f "$compose_file" --env-file "$env_file" pull
+  if truthy_remote "$skip_image_pull"; then
+    docker image inspect "$previous_image_ref" >/dev/null
+  else
+    docker compose -p "$compose_project" -f "$compose_file" --env-file "$env_file" pull
+  fi
   docker compose -p "$compose_project" -f "$compose_file" --env-file "$env_file" up -d
   if ! health_check "$local_health_url"; then
     capture_evidence "$marker_dir" "failed-rollback"
@@ -349,10 +364,14 @@ if [ "$has_pull_auth" = "1" ]; then
   export DOCKER_CONFIG="$remote_docker_config"
 fi
 
-if ! docker compose -p "$compose_project" -f "$compose_file" --env-file "$env_file" pull; then
-  printf 'pull failed before activation\n' >"$marker_dir/last-failure-reason"
-  capture_evidence "$marker_dir" "failed-pull"
-  fail_remote "compose pull failed before activation; running service was not changed"
+if truthy_remote "$skip_image_pull"; then
+  docker image inspect "$image_ref" >/dev/null || fail_remote "local image not found on deploy host: ${image_ref}"
+else
+  if ! docker compose -p "$compose_project" -f "$compose_file" --env-file "$env_file" pull; then
+    printf 'pull failed before activation\n' >"$marker_dir/last-failure-reason"
+    capture_evidence "$marker_dir" "failed-pull"
+    fail_remote "compose pull failed before activation; running service was not changed"
+  fi
 fi
 
 if ! docker compose -p "$compose_project" -f "$compose_file" --env-file "$env_file" up -d; then
