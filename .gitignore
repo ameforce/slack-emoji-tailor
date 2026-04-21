@@ -2,3 +2,8 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# OMX local runtime state
+.omx/logs/
+.omx/state/
+.omx/metrics.json
