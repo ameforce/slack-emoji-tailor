@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -15,7 +16,11 @@ from pydantic import ValidationError
 import uvicorn
 
 from app.schemas import ConvertParams
-from app.services.converter_adapter import InputTooLargeError, convert_uploaded_image
+from app.services.converter_adapter import (
+    MAX_UPLOAD_BYTES,
+    InputTooLargeError,
+    convert_uploaded_image,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -24,6 +29,7 @@ DEFAULT_HOST = "0.0.0.0"
 LOCALHOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 FALLBACK_PORT_MAX = 8099
+UPLOAD_READ_CHUNK_BYTES = 64 * 1024
 
 CanBind = Callable[[str, int], tuple[bool, OSError | None]]
 
@@ -79,6 +85,49 @@ async def healthz() -> JSONResponse:
     return JSONResponse(content={"status": "ok"})
 
 
+def _input_too_large_message(limit: int) -> str:
+    return f"Input file is too large. Max allowed size is {limit // (1024 * 1024)}MB."
+
+
+async def _read_upload_bounded(file: UploadFile, *, limit: int) -> bytes:
+    payload = bytearray()
+    total = 0
+
+    while True:
+        read_size = min(UPLOAD_READ_CHUNK_BYTES, limit + 1 - total)
+        if read_size <= 0:
+            raise InputTooLargeError(_input_too_large_message(limit))
+
+        chunk = await file.read(read_size)
+        if not chunk:
+            break
+
+        payload.extend(chunk)
+        total += len(chunk)
+        if total > limit:
+            raise InputTooLargeError(_input_too_large_message(limit))
+
+    return bytes(payload)
+
+
+def _ascii_filename_fallback(filename: str) -> str:
+    fallback = "".join(
+        char
+        if char.isascii()
+        and 32 <= ord(char) < 127
+        and char not in {'"', "\\", "/", ";"}
+        else "_"
+        for char in filename
+    )
+    return fallback.strip(" ._") or "emoji"
+
+
+def _content_disposition_attachment(filename: str) -> str:
+    fallback = _ascii_filename_fallback(filename)
+    encoded_filename = quote(filename, safe="")
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded_filename}"
+
+
 @app.post("/api/convert")
 async def convert_image(
     file: UploadFile = File(...),
@@ -100,9 +149,8 @@ async def convert_image(
             detail=error.errors(include_context=False, include_url=False),
         ) from error
 
-    payload = await file.read()
-
     try:
+        payload = await _read_upload_bounded(file, limit=MAX_UPLOAD_BYTES)
         converted = convert_uploaded_image(
             file_bytes=payload,
             original_filename=file.filename,
@@ -116,7 +164,7 @@ async def convert_image(
     source_metadata = converted.source_metadata
     metadata = converted.metadata
     headers = {
-        "Content-Disposition": f'attachment; filename="{converted.filename}"',
+        "Content-Disposition": _content_disposition_attachment(converted.filename),
         "X-Source-Format": source_metadata.format_name,
         "X-Source-Width": str(source_metadata.width),
         "X-Source-Height": str(source_metadata.height),

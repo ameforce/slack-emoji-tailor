@@ -5,6 +5,7 @@ from PIL import Image
 
 from app.services.converter_core import (
     build_step_candidates,
+    collapse_identical_frames,
     convert_gif_frames,
     convert_static,
     load_gif_frames_from_image,
@@ -30,6 +31,12 @@ def _make_gif_bytes() -> bytes:
         optimize=True,
     )
     return stream.getvalue()
+
+
+def _make_paletted_pixel(red: int, green: int, blue: int) -> Image.Image:
+    image = Image.new("P", (1, 1), 0)
+    image.putpalette([red, green, blue] + [0, 0, 0] * 255)
+    return image
 
 
 def test_parse_size_option_valid_and_invalid() -> None:
@@ -80,3 +87,29 @@ def test_convert_gif_frames_returns_gif() -> None:
     assert result.format_name == "GIF"
     assert result.frame_count >= 1
     assert len(result.data) > 0
+
+
+def test_collapse_identical_frames_keeps_palette_distinct_pixels() -> None:
+    red_frame = _make_paletted_pixel(255, 0, 0)
+    blue_frame = _make_paletted_pixel(0, 0, 255)
+
+    frames, durations = collapse_identical_frames(
+        [red_frame, blue_frame],
+        [100, 120],
+    )
+
+    assert frames == [red_frame, blue_frame]
+    assert durations == [100, 120]
+
+
+def test_collapse_identical_frames_merges_rendered_duplicates() -> None:
+    first_frame = _make_paletted_pixel(255, 0, 0)
+    second_frame = _make_paletted_pixel(255, 0, 0)
+
+    frames, durations = collapse_identical_frames(
+        [first_frame, second_frame],
+        [100, 120],
+    )
+
+    assert frames == [first_frame]
+    assert durations == [220]

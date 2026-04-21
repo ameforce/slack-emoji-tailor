@@ -170,16 +170,16 @@ def collapse_identical_frames(
 
     merged_frames: List[Image.Image] = [frames[0]]
     merged_durations: List[int] = [durations[0]]
-    prev_bytes = frames[0].tobytes()
+    prev_signature = (frames[0].size, frames[0].convert("RGBA").tobytes())
 
     for frame, duration in zip(frames[1:], durations[1:]):
-        current_bytes = frame.tobytes()
-        if current_bytes == prev_bytes:
+        current_signature = (frame.size, frame.convert("RGBA").tobytes())
+        if current_signature == prev_signature:
             merged_durations[-1] += duration
             continue
         merged_frames.append(frame)
         merged_durations.append(duration)
-        prev_bytes = current_bytes
+        prev_signature = current_signature
 
     return merged_frames, merged_durations
 
