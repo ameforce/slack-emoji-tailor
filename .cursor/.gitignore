@@ -1,0 +1,20 @@
+# local secrets
+.env
+.env.local
+
+# cursor local outputs
+session-summary.md
+.artifacts/
+.tmp/
+
+# review gate outputs
+review/out/
+.cursor/review/out/
+
+# e2e outputs
+playwright-report/
+test-results/
+*.trace
+
+# temp archives
+*.zip
