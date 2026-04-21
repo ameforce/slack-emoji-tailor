@@ -15,7 +15,7 @@ Use this checklist before enabling or re-running the Jenkins dev deployment for 
 - [ ] `REGISTRY_CREDENTIALS_ID` is a Jenkins credential used only for image push from the build agent.
 - [ ] If the server needs pull auth, `REGISTRY_PULL_CREDENTIALS_ID` is supplied by Jenkins or pull auth is pre-provisioned on `enm-server` with an explicit owner.
 - [ ] Any Jenkins-managed remote login uses `docker login --password-stdin`; never place a password/token in command arguments, compose files, `.env`, or archived evidence.
-- [ ] Remote pull login uses an isolated `DOCKER_CONFIG` under the deploy path with restricted permissions, not the default user Docker config unless that is the approved pre-provisioned path.
+- [ ] Remote pull login uses an isolated `DOCKER_CONFIG` (isolated DOCKER_CONFIG) under the deploy path with restricted permissions, not the default user Docker config unless that is the approved pre-provisioned path.
 - [ ] Registry credential IDs may appear in sanitized previews; registry secrets, tokens, and passwords must not appear in console logs or artifacts.
 
 ## External public-check proof
@@ -46,4 +46,4 @@ Use this checklist before enabling or re-running the Jenkins dev deployment for 
 - [ ] `RUN_DEPLOY=false` is the safe default for new or unreviewed jobs; first execution should use `DEPLOY_DRY_RUN=true` and archive the preview.
 - [ ] Build serialization is enabled (`disableConcurrentBuilds` plus remote `flock`) so two deploys cannot mutate the same compose project at once.
 - [ ] The deploy path and app port are dedicated to `slack-emoji-tailor-dev`; confirm the external reverse proxy points to `127.0.0.1:${DEPLOY_APP_PORT}` before expecting public health to pass.
-- [ ] No nginx, DNS, Certbot, or reverse-proxy mutation is performed by this repo or Jenkins job. Those changes are external prerequisites only, and failure to meet them must keep the Jenkins deployment red.
+- [ ] No nginx, no DNS, Certbot, or reverse-proxy mutation is performed by this repo or Jenkins job. Those changes are external prerequisites only, and failure to meet them must keep the Jenkins deployment red.
