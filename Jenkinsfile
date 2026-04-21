@@ -319,6 +319,7 @@ fi
     stage('External Public Health') {
       agent { label "${params.PUBLIC_CHECK_AGENT_LABEL}" }
       when {
+        beforeAgent true
         allOf {
           expression { return params.RUN_DEPLOY }
           expression { return !params.DEPLOY_DRY_RUN }
