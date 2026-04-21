@@ -176,24 +176,36 @@ def test_deploy_scripts_have_required_safety_guards_and_no_proxy_mutations() -> 
         deploy_script,
         [
             "flock",
-            "docker compose pull",
-            "docker compose up -d",
             "--password-stdin",
             "DOCKER_CONFIG",
             "IMAGE_REF",
-            "PREVIOUS_IMAGE",
-            "CURRENT_IMAGE",
             "NO_PREVIOUS_IMAGE_AVAILABLE",
-            "docker compose down",
             "/healthz",
         ],
         label="deploy script guardrails",
     )
+    for label, pattern in {
+        "compose pull": r"docker\s+compose\b[\s\S]*?\bpull\b",
+        "compose up": r"docker\s+compose\b[\s\S]*?\bup\s+-d\b",
+        "first-install compose down": r"docker\s+compose\b[\s\S]*?\bdown\b",
+        "previous image marker": r"PREVIOUS_IMAGE|previous[-_]image[-_]ref",
+        "current image marker": r"CURRENT_IMAGE|current[-_]image[-_]ref",
+    }.items():
+        assert re.search(pattern, deploy_script, flags=re.IGNORECASE), (
+            f"deploy script is missing required guardrail: {label}"
+        )
     _assert_contains_all(
         rollback_script,
-        ["PREVIOUS_IMAGE", "IMAGE_REF", "docker compose pull", "docker compose up -d", "/healthz"],
+        ["PREVIOUS_IMAGE", "IMAGE_REF", "/healthz"],
         label="rollback script guardrails",
     )
+    for label, pattern in {
+        "rollback compose pull": r"docker\s+compose\b[\s\S]*?\bpull\b",
+        "rollback compose up": r"docker\s+compose\b[\s\S]*?\bup\s+-d\b",
+    }.items():
+        assert re.search(pattern, rollback_script, flags=re.IGNORECASE), (
+            f"rollback script is missing required guardrail: {label}"
+        )
 
     forbidden_mutation_patterns = {
         "nginx config path": r"/etc/nginx",
