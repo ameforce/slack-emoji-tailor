@@ -105,11 +105,15 @@ def test_jenkinsfile_fails_fast_on_build_agent_tooling_and_uses_immutable_image_
         ["python3 --version", "uv --version", "docker version", "docker buildx version"],
         label="build-agent preflight",
     )
-    assert "params.BUILD_AGENT_LABEL" in preflight or "BUILD_AGENT_LABEL" in preflight
+    assert re.search(r"agent\s*\{\s*label\s+['\"]\\?\$\{?params\.BUILD_AGENT_LABEL", jenkinsfile), (
+        "Toolchain, test, build, and push stages must run on BUILD_AGENT_LABEL so "
+        "the current Docker-less ENM-hosted Jenkins controller cannot satisfy the "
+        "deployment preflight by accident"
+    )
 
     _assert_contains_all(
         jenkinsfile,
-        ["uv run pytest -q", "Dockerfile", "docker push", "IMAGE_REF"],
+        ["uv run pytest -q", "docker build", "docker push", "IMAGE_REF"],
         label="test/build/push flow",
     )
 
