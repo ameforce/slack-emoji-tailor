@@ -17,15 +17,32 @@ cmd /c "uv sync"
 cmd /c "uv run slack-emoji-tailor"
 ```
 
-브라우저에서 `http://127.0.0.1:8000` 접속.
+앱은 기본적으로 `0.0.0.0`에 바인딩되어 같은 네트워크의 다른 PC/모바일에서도 접속할 수 있습니다.
+실행하면 터미널에 아래처럼 접속 URL이 출력됩니다.
 
-같은 네트워크의 다른 디바이스(모바일 포함)에서 접속하려면:
-
-```cmd
-cmd /c "uv run slack-emoji-tailor --host 0.0.0.0 --port 8000"
+```text
+Local URL: http://127.0.0.1:8000
+Same-network URL: http://<내_PC_IP>:8000
 ```
 
-모바일 브라우저에서 `http://<내_PC_IP>:8000` 접속.
+내 PC에서는 `Local URL`, 같은 네트워크의 다른 기기에서는 `Same-network URL`로 접속합니다.
+단, Windows에서 8000 포트를 다른 프로세스나 시스템 서비스가 이미 점유한 경우
+앱이 자동으로 `8001~8099` 중 사용 가능한 포트로 전환하고 터미널에 접속 URL을 출력합니다.
+
+특정 포트를 직접 지정하려면:
+
+```cmd
+cmd /c "uv run slack-emoji-tailor --port 8001"
+```
+
+내 PC에서만 접속 가능하게 제한하려면:
+
+```cmd
+cmd /c "uv run slack-emoji-tailor --host 127.0.0.1"
+```
+
+다른 기기에서 접속이 안 되면 Windows 방화벽에서 Python/해당 포트를
+`개인 네트워크`에 허용해야 할 수 있습니다.
 
 ## 테스트 / 성능 측정
 
