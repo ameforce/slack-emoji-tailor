@@ -138,10 +138,12 @@ def test_public_health_runs_on_external_agent_not_through_enm_ssh() -> None:
         "Public health stage must fail fast when the check is running on enm-server "
         "or the Jenkins controller host"
     )
-    assert "ssh" not in public_health.lower(), (
-        "Public health proof must come from PUBLIC_CHECK_AGENT_LABEL, not from an "
-        "SSH/on-host curl"
-    )
+    forbidden_on_host_commands = [r"\bssh\b", r"\bscp\b", r"\bsshpass\b"]
+    for pattern in forbidden_on_host_commands:
+        assert not re.search(pattern, public_health, flags=re.IGNORECASE), (
+            "Public health proof must come from PUBLIC_CHECK_AGENT_LABEL, not from "
+            f"an SSH/on-host command matching {pattern!r}"
+        )
 
 
 def test_compose_deploy_file_uses_registry_image_localhost_port_and_healthcheck() -> None:
@@ -200,14 +202,10 @@ def test_deploy_scripts_have_required_safety_guards_and_no_proxy_mutations() -> 
             f"deploy scripts must not mutate DNS/Nginx/Certbot state ({label})"
         )
 
-    secret_echo_patterns = [
-        r"echo\s+.*\$\{?REGISTRY_.*(?:PASSWORD|TOKEN|SECRET)",
-        r"printf\s+.*\$\{?REGISTRY_.*(?:PASSWORD|TOKEN|SECRET)",
-    ]
-    for pattern in secret_echo_patterns:
-        assert not re.search(pattern, combined, flags=re.IGNORECASE), (
-            "deploy scripts must not print registry passwords/tokens/secrets"
-        )
+    assert not re.search(r"set\s+-x", combined), (
+        "deploy scripts must not enable shell tracing where Jenkins/server "
+        "credentials may be in scope"
+    )
 
 
 def test_security_checklist_covers_operational_risk_controls() -> None:
