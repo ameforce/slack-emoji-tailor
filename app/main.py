@@ -163,6 +163,9 @@ def _frame_cap_headers(converted: ConversionPayload, params: ConvertParams) -> d
         "X-Effective-Max-Frames": str(effective_max_frames),
         "X-Frame-Cap-Mode": frame_cap_mode,
         "X-Frame-Reduction-Reason": frame_reduction_reason,
+        "X-Gif-Candidate-Budget": str(frame_cap_metadata.candidate_budget),
+        "X-Gif-Candidate-Attempts": str(frame_cap_metadata.candidate_attempts),
+        "X-Gif-Search-Exhausted": str(frame_cap_metadata.gif_search_exhausted).lower(),
     }
 
 

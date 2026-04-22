@@ -27,6 +27,9 @@ class FrameCapMetadata:
     effective_max_frames: int = 0
     frame_cap_mode: str = "none"
     frame_reduction_reason: str = "none"
+    candidate_budget: int = 0
+    candidate_attempts: int = 0
+    gif_search_exhausted: bool = False
 
 
 @dataclass
@@ -86,18 +89,27 @@ def _frame_cap_metadata_from_result(
             effective_max_frames=source_metadata.frame_count,
             frame_cap_mode="none",
             frame_reduction_reason="none",
+            candidate_budget=0,
+            candidate_attempts=0,
+            gif_search_exhausted=False,
         )
 
     requested_max_frames = getattr(result, "requested_max_frames", None)
     effective_max_frames = getattr(result, "effective_max_frames", None)
     frame_cap_mode = getattr(result, "frame_cap_mode", None)
     frame_reduction_reason = getattr(result, "frame_reduction_reason", None)
+    candidate_budget = getattr(result, "candidate_budget", None)
+    candidate_attempts = getattr(result, "candidate_attempts", None)
+    gif_search_exhausted = getattr(result, "gif_search_exhausted", None)
 
     return FrameCapMetadata(
         requested_max_frames=int(requested_max_frames or params.max_frames),
         effective_max_frames=int(effective_max_frames or params.max_frames),
         frame_cap_mode=str(frame_cap_mode or "user"),
         frame_reduction_reason=str(frame_reduction_reason or "none"),
+        candidate_budget=int(candidate_budget or 0),
+        candidate_attempts=int(candidate_attempts or 0),
+        gif_search_exhausted=bool(gif_search_exhausted),
     )
 
 

@@ -134,6 +134,9 @@ def test_convert_reports_frame_cap_headers_for_animated_result(
                 effective_max_frames=159,
                 frame_cap_mode="strategy",
                 frame_reduction_reason="none",
+                candidate_budget=240,
+                candidate_attempts=11,
+                gif_search_exhausted=False,
             ),
         )
 
@@ -161,6 +164,9 @@ def test_convert_reports_frame_cap_headers_for_animated_result(
     assert response.headers["x-effective-max-frames"] == "159"
     assert response.headers["x-frame-cap-mode"] == "strategy"
     assert response.headers["x-frame-reduction-reason"] == "none"
+    assert response.headers["x-gif-candidate-budget"] == "240"
+    assert response.headers["x-gif-candidate-attempts"] == "11"
+    assert response.headers["x-gif-search-exhausted"] == "false"
 
 
 @pytest.mark.parametrize("strategy", ["quality", "balanced"])
@@ -201,6 +207,9 @@ def test_convert_reports_user_frame_cap_for_non_frame_strategies(
                 effective_max_frames=50,
                 frame_cap_mode="user",
                 frame_reduction_reason="user-cap",
+                candidate_budget=240,
+                candidate_attempts=5,
+                gif_search_exhausted=False,
             ),
         )
 
@@ -224,6 +233,9 @@ def test_convert_reports_user_frame_cap_for_non_frame_strategies(
     assert response.headers["x-effective-max-frames"] == "50"
     assert response.headers["x-frame-cap-mode"] == "user"
     assert response.headers["x-frame-reduction-reason"] == "user-cap"
+    assert response.headers["x-gif-candidate-budget"] == "240"
+    assert response.headers["x-gif-candidate-attempts"] == "5"
+    assert response.headers["x-gif-search-exhausted"] == "false"
 
 
 def test_convert_rejects_invalid_optimization_strategy() -> None:
