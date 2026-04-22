@@ -12,6 +12,17 @@ IMPLEMENTATION_ARTIFACTS = [
     "scripts/deploy/jenkins-enm-rollback.sh",
 ]
 
+LF_ONLY_ARTIFACTS = [
+    ".gitattributes",
+    "Dockerfile",
+    "Jenkinsfile",
+    "docker-compose.dev.deploy.yml",
+    "docker-compose.yml",
+    "pyproject.toml",
+    "scripts/deploy/jenkins-enm-deploy.sh",
+    "scripts/deploy/jenkins-enm-rollback.sh",
+]
+
 
 def _require_implementation_lanes_integrated() -> None:
     if not any((ROOT / path).exists() for path in IMPLEMENTATION_ARTIFACTS):
@@ -26,6 +37,12 @@ def _read(relative_path: str) -> str:
     path = ROOT / relative_path
     assert path.exists(), f"Missing required deploy artifact: {relative_path}"
     return path.read_text(encoding="utf-8")
+
+
+def _read_bytes(relative_path: str) -> bytes:
+    path = ROOT / relative_path
+    assert path.exists(), f"Missing required deploy artifact: {relative_path}"
+    return path.read_bytes()
 
 
 def _assert_contains_all(text: str, required: list[str], *, label: str) -> None:
@@ -95,6 +112,15 @@ def test_jenkinsfile_declares_required_parameters_and_core_stages() -> None:
         "Archive",
     ]:
         _stage_body(jenkinsfile, stage_name)
+
+
+def test_deploy_artifacts_use_lf_line_endings() -> None:
+    _require_implementation_lanes_integrated()
+
+    for relative_path in LF_ONLY_ARTIFACTS:
+        assert b"\r\n" not in _read_bytes(relative_path), (
+            f"{relative_path} must use LF line endings; CRLF can break Unix/Jenkins tooling"
+        )
 
 
 def test_jenkinsfile_fails_fast_on_build_agent_tooling_and_uses_immutable_image_ref() -> None:
