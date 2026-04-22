@@ -62,6 +62,41 @@ def _stage_body(jenkinsfile: str, stage_name_fragment: str) -> str:
     return jenkinsfile[match.start() : end]
 
 
+def _string_param_definition(jenkinsfile: str, param_name: str) -> str | None:
+    match = re.search(
+        rf"string\s*\(\s*name:\s*['\"]{re.escape(param_name)}['\"][\s\S]*?\)",
+        jenkinsfile,
+    )
+    return match.group(0) if match else None
+
+
+def _string_param_default(jenkinsfile: str, param_name: str) -> str | None:
+    definition = _string_param_definition(jenkinsfile, param_name)
+    if not definition:
+        return None
+    match = re.search(r"defaultValue:\s*['\"]([^'\"]*)['\"]", definition)
+    assert match, f"{param_name} parameter exists but has no explicit defaultValue"
+    return match.group(1)
+
+
+def _xfail_if_worker1_branch_policy_lane_is_not_integrated(jenkinsfile: str) -> None:
+    legacy_markers = [
+        "defaultValue: 'main,develop'",
+        "?: 'manual'",
+        "DEPLOY_BRANCH = branchName ?: 'manual'",
+        "valueOrDefault(params.DEPLOY_PATH",
+        "valueOrDefault(params.DEPLOY_APP_PORT",
+        "valueOrDefault(params.DEPLOY_COMPOSE_PROJECT",
+        "valueOrDefault(params.PUBLIC_HEALTHCHECK_URL",
+    ]
+    if sum(marker in jenkinsfile for marker in legacy_markers) >= 4:
+        pytest.xfail(
+            "worker-1 Jenkinsfile branch-policy lane is not integrated in this "
+            "worktree yet; these guardrails activate against the integrated "
+            "Jenkinsfile"
+        )
+
+
 def test_jenkinsfile_declares_required_parameters_and_core_stages() -> None:
     _require_implementation_lanes_integrated()
     jenkinsfile = _read("Jenkinsfile")
@@ -87,7 +122,6 @@ def test_jenkinsfile_declares_required_parameters_and_core_stages() -> None:
             "PUBLIC_HEALTHCHECK_URL",
             "LOCAL_HEALTHCHECK_URL",
             "DEPLOY_COMPOSE_PROJECT",
-            "DEPLOY_ALLOWED_BRANCHES",
         ],
         label="Jenkinsfile parameters",
     )
@@ -173,6 +207,72 @@ def test_jenkinsfile_routes_main_to_prod_and_non_main_to_dev_targets() -> None:
         ],
         label="branch-aware deploy routing",
     )
+
+
+def test_jenkinsfile_allows_all_branches_by_default_and_requires_branch_identity() -> None:
+    _require_implementation_lanes_integrated()
+    jenkinsfile = _read("Jenkinsfile")
+    _xfail_if_worker1_branch_policy_lane_is_not_integrated(jenkinsfile)
+
+    deploy_allowed_default = _string_param_default(jenkinsfile, "DEPLOY_ALLOWED_BRANCHES")
+    if deploy_allowed_default is not None:
+        definition = _string_param_definition(jenkinsfile, "DEPLOY_ALLOWED_BRANCHES")
+        assert deploy_allowed_default == "", (
+            "DEPLOY_ALLOWED_BRANCHES must not default to main,develop; either remove "
+            "the parameter or leave the default empty so every non-main branch can "
+            "deploy to shared dev when RUN_DEPLOY=true"
+        )
+        assert definition and "Empty allows any branch" in definition, (
+            "DEPLOY_ALLOWED_BRANCHES documentation must state that an empty default "
+            "allows every branch"
+        )
+
+    assert "main,develop" not in jenkinsfile, (
+        "legacy main/develop branch allowlist must not remain in Jenkinsfile"
+    )
+    assert "?: 'manual'" not in jenkinsfile
+    assert "DEPLOY_BRANCH = branchName ?: 'manual'" not in jenkinsfile
+    assert re.search(r"error\s*\([\s\S]{0,200}branch", jenkinsfile, re.IGNORECASE), (
+        "Jenkinsfile must fail fast when multibranch branch identity cannot be "
+        "resolved instead of silently treating the build as manual"
+    )
+
+
+def test_jenkinsfile_rejects_branch_target_override_mismatches() -> None:
+    _require_implementation_lanes_integrated()
+    jenkinsfile = _read("Jenkinsfile")
+    _xfail_if_worker1_branch_policy_lane_is_not_integrated(jenkinsfile)
+
+    for param_name in [
+        "DEPLOY_PATH",
+        "DEPLOY_APP_PORT",
+        "DEPLOY_COMPOSE_PROJECT",
+        "PUBLIC_HEALTHCHECK_URL",
+    ]:
+        assert f"valueOrDefault(params.{param_name}" not in jenkinsfile, (
+            f"{param_name} must not silently override the branch-derived target; "
+            "mismatches must be rejected before remote mutation"
+        )
+
+        direct_guard = re.search(
+            rf"(?:params\.{param_name}[\s\S]{{0,700}}error\s*\(|"
+            rf"error\s*\([\s\S]{{0,700}}{param_name})",
+            jenkinsfile,
+        )
+        helper_call = re.search(
+            rf"(?:assert|enforce|reject|validate)[A-Za-z0-9_]*\s*"
+            rf"\([^)]*['\"]{param_name}['\"][^)]*params\.{param_name}",
+            jenkinsfile,
+        )
+        helper_errors = re.search(
+            r"def\s+(?:assert|enforce|reject|validate)[A-Za-z0-9_]*"
+            r"[\s\S]{0,900}error\s*\(",
+            jenkinsfile,
+        )
+        assert direct_guard or (helper_call and helper_errors), (
+            f"Jenkinsfile must reject {param_name} values that do not match the "
+            "canonical main/prod or non-main/dev target"
+        )
 
 
 def test_public_health_runs_on_external_agent_not_through_enm_ssh() -> None:
@@ -293,6 +393,26 @@ def test_security_checklist_covers_operational_risk_controls() -> None:
     ]
     missing = [topic for topic in required_topics if topic not in checklist]
     assert not missing, f"security checklist is missing required topics: {missing}"
+
+
+def test_branch_routed_deploy_docs_cover_shared_dev_and_prod_safety() -> None:
+    deploy_doc = _read("docs/deploy/jenkins-dev.md").lower()
+    checklist = _read("docs/deploy/jenkins-dev-security-checklist.md").lower()
+    combined = f"{deploy_doc}\n{checklist}"
+
+    required_topics = [
+        "every non-main branch",
+        "shared dev",
+        "last successful non-main deploy wins",
+        "run_deploy=true",
+        "run_deploy=false",
+        "production-impacting",
+        "main` targets `emoji.enmsoftware.com",
+        "non-`main` targets `dev.emoji.enmsoftware.com",
+    ]
+    missing = [topic for topic in required_topics if topic not in combined]
+    assert not missing, f"branch-routed deploy docs are missing required topics: {missing}"
+
 
 def test_docker_and_jenkins_inject_app_visible_git_tag_version_metadata() -> None:
     dockerfile = _read("Dockerfile")

@@ -31,7 +31,7 @@ pipeline {
     string(name: 'PUBLIC_HEALTHCHECK_URL', defaultValue: '', description: 'Optional override. Auto: main -> https://emoji.enmsoftware.com/healthz, non-main -> https://dev.emoji.enmsoftware.com/healthz.')
     string(name: 'LOCAL_HEALTHCHECK_URL', defaultValue: '', description: 'Optional override. Auto: http://127.0.0.1:${DEPLOY_APP_PORT}/healthz.')
     string(name: 'DEPLOY_COMPOSE_PROJECT', defaultValue: '', description: 'Optional override. Auto: main -> slack-emoji-tailor-prod, non-main -> slack-emoji-tailor-dev.')
-    string(name: 'DEPLOY_ALLOWED_BRANCHES', defaultValue: 'main,develop', description: 'Comma-separated branches allowed to deploy. Empty allows any branch; manual builds are allowed.')
+    string(name: 'DEPLOY_ALLOWED_BRANCHES', defaultValue: '', description: 'Emergency narrowing only. Empty allows any branch after branch identity is resolved; branch identity still fixes prod/dev targets.')
     string(name: 'DEPLOY_HEALTHCHECK_TIMEOUT_SECONDS', defaultValue: '120', description: 'Maximum local health wait budget for the deploy script.')
     string(name: 'DEPLOY_HEALTHCHECK_INTERVAL_SECONDS', defaultValue: '5', description: 'Local health retry interval for the deploy script.')
     string(name: 'PUBLIC_HEALTHCHECK_TIMEOUT_SECONDS', defaultValue: '15', description: 'curl --max-time budget for the public health check.')
@@ -57,31 +57,20 @@ pipeline {
       steps {
         script {
           requireParam('BUILD_AGENT_LABEL', params.BUILD_AGENT_LABEL)
-          def branchName = (env.BRANCH_NAME ?: env.GIT_BRANCH ?: env.GIT_LOCAL_BRANCH ?: env.CHANGE_BRANCH ?: env.JOB_BASE_NAME ?: 'manual').trim()
-          if (branchName.startsWith('origin/')) {
-            branchName = branchName.substring('origin/'.length())
-          }
-          if (branchName.startsWith('refs/heads/')) {
-            branchName = branchName.substring('refs/heads/'.length())
-          }
-          if (branchName == 'manual' || branchName == env.JOB_BASE_NAME) {
-            def jobBaseName = (env.JOB_BASE_NAME ?: '').trim()
-            if (jobBaseName.endsWith('-main')) {
-              branchName = 'main'
-            } else if (jobBaseName.endsWith('-develop')) {
-              branchName = 'develop'
-            }
-          }
-          env.DEPLOY_BRANCH = branchName ?: 'manual'
+          env.DEPLOY_BRANCH = resolveDeployBranch()
 
           env.DEPLOY_ENVIRONMENT = env.DEPLOY_BRANCH == 'main' ? 'prod' : 'dev'
           def prodTarget = env.DEPLOY_ENVIRONMENT == 'prod'
+          def canonicalDeployPath = prodTarget ? '/home/ameforce/slack-emoji-tailor-prod' : '/home/ameforce/slack-emoji-tailor-dev'
+          def canonicalDeployAppPort = prodTarget ? '3100' : '18082'
+          def canonicalDeployComposeProject = prodTarget ? 'slack-emoji-tailor-prod' : 'slack-emoji-tailor-dev'
+          def canonicalPublicHealthcheckUrl = prodTarget ? 'https://emoji.enmsoftware.com/healthz' : 'https://dev.emoji.enmsoftware.com/healthz'
           env.EFFECTIVE_DEPLOY_HOST = valueOrDefault(params.DEPLOY_HOST, 'enmsoftware.com')
           env.EFFECTIVE_DEPLOY_SSH_USER = valueOrDefault(params.DEPLOY_SSH_USER, 'ameforce')
-          env.EFFECTIVE_DEPLOY_PATH = valueOrDefault(params.DEPLOY_PATH, prodTarget ? '/home/ameforce/slack-emoji-tailor-prod' : '/home/ameforce/slack-emoji-tailor-dev')
-          env.EFFECTIVE_DEPLOY_APP_PORT = valueOrDefault(params.DEPLOY_APP_PORT, prodTarget ? '3100' : '18082')
-          env.EFFECTIVE_DEPLOY_COMPOSE_PROJECT = valueOrDefault(params.DEPLOY_COMPOSE_PROJECT, prodTarget ? 'slack-emoji-tailor-prod' : 'slack-emoji-tailor-dev')
-          env.PUBLIC_HEALTHCHECK_URL_RESOLVED = valueOrDefault(params.PUBLIC_HEALTHCHECK_URL, prodTarget ? 'https://emoji.enmsoftware.com/healthz' : 'https://dev.emoji.enmsoftware.com/healthz')
+          env.EFFECTIVE_DEPLOY_PATH = branchTargetValue('DEPLOY_PATH', params.DEPLOY_PATH, canonicalDeployPath, env.DEPLOY_BRANCH)
+          env.EFFECTIVE_DEPLOY_APP_PORT = branchTargetValue('DEPLOY_APP_PORT', params.DEPLOY_APP_PORT, canonicalDeployAppPort, env.DEPLOY_BRANCH)
+          env.EFFECTIVE_DEPLOY_COMPOSE_PROJECT = branchTargetValue('DEPLOY_COMPOSE_PROJECT', params.DEPLOY_COMPOSE_PROJECT, canonicalDeployComposeProject, env.DEPLOY_BRANCH)
+          env.PUBLIC_HEALTHCHECK_URL_RESOLVED = branchTargetValue('PUBLIC_HEALTHCHECK_URL', params.PUBLIC_HEALTHCHECK_URL, canonicalPublicHealthcheckUrl, env.DEPLOY_BRANCH)
           env.LOCAL_HEALTHCHECK_URL_RESOLVED = valueOrDefault(params.LOCAL_HEALTHCHECK_URL, "http://127.0.0.1:${env.EFFECTIVE_DEPLOY_APP_PORT}/healthz")
 
           def imageMode = valueOrDefault(params.IMAGE_DISTRIBUTION_MODE, 'remote-build')
@@ -236,7 +225,7 @@ docker logout "$REGISTRY_URL" >/dev/null 2>&1 || true
           }
 
           def allowedBranches = params.DEPLOY_ALLOWED_BRANCHES.split(',').collect { it.trim() }.findAll { it }
-          def canDeployBranch = env.DEPLOY_BRANCH == 'manual' || allowedBranches.isEmpty() || allowedBranches.contains(env.DEPLOY_BRANCH)
+          def canDeployBranch = allowedBranches.isEmpty() || allowedBranches.contains(env.DEPLOY_BRANCH)
           if (!canDeployBranch) {
             error("Branch ${env.DEPLOY_BRANCH} is outside DEPLOY_ALLOWED_BRANCHES=${params.DEPLOY_ALLOWED_BRANCHES}.")
           }
@@ -460,6 +449,41 @@ bash "$ROLLBACK_SCRIPT" | tee deploy-evidence/rollback-after-public-health.txt
 String valueOrDefault(Object value, String fallback) {
   def normalized = value == null ? '' : value.toString().trim()
   return normalized ? normalized : fallback
+}
+
+String branchTargetValue(String name, Object value, String canonical, String branchName) {
+  def normalized = value == null ? '' : value.toString().trim()
+  if (!normalized) {
+    return canonical
+  }
+  if (normalized != canonical) {
+    error("Branch target policy mismatch: ${name}=${normalized} is not allowed for branch ${branchName}; expected ${canonical}.")
+  }
+  return normalized
+}
+
+String resolveDeployBranch() {
+  for (candidate in [env.BRANCH_NAME, env.CHANGE_BRANCH, env.GIT_LOCAL_BRANCH, env.GIT_BRANCH]) {
+    def branchName = normalizeBranchName(candidate)
+    if (branchName) {
+      return branchName
+    }
+  }
+  error('Unable to resolve branch identity from Jenkins multibranch environment; refusing to choose a deploy target.')
+}
+
+String normalizeBranchName(Object value) {
+  def branchName = value == null ? '' : value.toString().trim()
+  if (!branchName) {
+    return ''
+  }
+  branchName = branchName.replaceFirst(/^refs\/heads\//, '')
+  branchName = branchName.replaceFirst(/^refs\/remotes\/origin\//, '')
+  branchName = branchName.replaceFirst(/^origin\//, '')
+  if (branchName in ['HEAD', 'detached', 'manual']) {
+    return ''
+  }
+  return branchName
 }
 
 void requireParam(String name, Object value) {

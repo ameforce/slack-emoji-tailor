@@ -14,6 +14,8 @@ The Jenkins deployment path is responsible for:
 
 Branch routing is automatic: `main` deploys to production (`emoji.enmsoftware.com`, port `3100`, project/path suffix `prod`), while every non-`main` branch deploys to dev (`dev.emoji.enmsoftware.com`, port `18082`, project/path suffix `dev`). DNS records, Nginx virtual hosts, Certbot, and reverse-proxy changes are external prerequisites. The Jenkins job must not apply them, but a broken public health check still fails the deployment.
 
+All non-main branches share dev. The last successful non-main deploy wins and overwrites the shared `dev.emoji.enmsoftware.com` runtime, so branch jobs may build/index freely but must not mutate the live service unless `RUN_DEPLOY=true` is explicitly set. Keep `RUN_DEPLOY=false` as the safe default for branch indexing and routine build verification. A `main` deployment targets production and is production-impacting; validate it with `DEPLOY_DRY_RUN=true` first unless there is explicit production deployment authorization.
+
 ## Required Jenkins labels
 
 | Parameter | Requirement |
@@ -102,3 +104,6 @@ If this is a first install and no previous image marker exists, Jenkins should s
 - Do not apply or edit DNS, Nginx, Certbot, or reverse-proxy configuration from this repo's Jenkins deployment.
 - Do not treat on-host curl output as proof of public availability; public validation must run from `PUBLIC_CHECK_AGENT_LABEL` outside `enm-server`.
 - Do not bypass Jenkins for recurring app deployment.
+- Treat every non-main branch as a shared-dev deploy candidate only; non-main jobs must resolve to `dev.emoji.enmsoftware.com`, `/home/ameforce/slack-emoji-tailor-dev`, port `18082`, and `slack-emoji-tailor-dev`.
+- Treat `main` as production-only; prod deploys are production-impacting and must resolve to `emoji.enmsoftware.com`, `/home/ameforce/slack-emoji-tailor-prod`, port `3100`, and `slack-emoji-tailor-prod`.
+- Reject target override mismatches instead of silently accepting a non-main branch pointed at production or `main` pointed at shared dev.

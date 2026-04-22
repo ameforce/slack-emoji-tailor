@@ -46,6 +46,10 @@ Use this checklist before enabling or re-running the Jenkins branch-routed deplo
 
 - [ ] Job parameters are configured for `BUILD_AGENT_LABEL`, `PUBLIC_CHECK_AGENT_LABEL`, `DEPLOY_HOST`, `DEPLOY_SSH_USER`, optional `DEPLOY_PATH`, `DEPLOY_SSH_CREDENTIALS_ID`, `IMAGE_DISTRIBUTION_MODE`, `LOCAL_IMAGE_REPOSITORY`, optional registry settings, optional `DEPLOY_APP_PORT`, optional `LOCAL_HEALTHCHECK_URL`, optional `PUBLIC_HEALTHCHECK_URL`, optional `DEPLOY_COMPOSE_PROJECT`, and `DEPLOY_ALLOWED_BRANCHES`.
 - [ ] `RUN_DEPLOY=false` is the safe default for new or unreviewed jobs; first execution should use `DEPLOY_DRY_RUN=true` and archive the preview.
+- [ ] Every non-main branch is allowed to build and may deploy only when an operator explicitly sets `RUN_DEPLOY=true`; branch indexing or normal test builds must not overwrite shared dev by default.
+- [ ] All non-main branches share dev, and the last successful non-main deploy wins for `dev.emoji.enmsoftware.com`. Record the branch name, image reference, and Jenkins build URL in deploy evidence so the current shared-dev owner is visible.
+- [ ] A `main` deploy is production-impacting. Use `DEPLOY_DRY_RUN=true` to inspect the prod preview before any live production mutation unless explicit production authorization has already been recorded.
 - [ ] Build serialization is enabled (`disableConcurrentBuilds` plus remote `flock`) so two deploys cannot mutate the same compose project at once.
 - [ ] Branch routing is confirmed: `main` targets `emoji.enmsoftware.com` on `127.0.0.1:3100`; non-`main` targets `dev.emoji.enmsoftware.com` on `127.0.0.1:18082`.
+- [ ] Target override mismatches are rejected: non-`main` targets `dev.emoji.enmsoftware.com` and cannot point at prod path/port/project/URL; `main` targets `emoji.enmsoftware.com` and cannot point at shared dev path/port/project/URL.
 - [ ] No nginx, no DNS, Certbot, or reverse-proxy mutation is performed by this repo or Jenkins job. Those changes are external prerequisites only, and failure to meet them must keep the Jenkins deployment red.
