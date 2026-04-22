@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/static/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <span class="badge">Slack Emoji Tailor</span>
+      <h1>이미지를 Slack Emoji에 맞게 자동 최적화</h1>
+      <p>업로드하면 정사각형/용량/프레임을 자동 조정해 미리보기와 다운로드를 제공합니다.</p>
+    </section>
+
+    <section class="panel">
+      <form id="convert-form" class="form-grid" novalidate>
+        <label id="drop-zone" class="drop-zone" for="file-input">
+          <input id="file-input" name="file" type="file" accept="image/*">
+          <span class="drop-title">이미지를 선택하거나 이 영역에 드래그</span>
+          <span class="drop-subtitle">PNG, JPG, GIF, WebP (최대 10MB)</span>
+          <span id="selected-file" class="selected-file">선택된 파일 없음</span>
+        </label>
+
+        <div class="option-grid">
+          <label class="field">
+            <span>최대 용량 (KB)</span>
+            <input id="max-kb" name="max_kb" type="number" min="1" max="512" value="{{ default_max_kb }}">
+          </label>
+
+          <label class="field">
+            <span>정사각형 크기</span>
+            <input id="size" name="size" type="text" value="{{ default_size }}" placeholder="auto 또는 16~512">
+          </label>
+
+          <label class="field">
+            <span>맞춤 방식</span>
+            <select id="fit" name="fit">
+              <option value="stretch" {% if default_fit == "stretch" %}selected{% endif %}>stretch</option>
+              <option value="cover" {% if default_fit == "cover" %}selected{% endif %}>cover</option>
+              <option value="contain" {% if default_fit == "contain" %}selected{% endif %}>contain</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>GIF 최대 프레임</span>
+            <input
+              id="max-frames"
+              name="max_frames"
+              type="number"
+              min="1"
+              max="50"
+              value="{{ default_max_frames }}"
+            >
+          </label>
+        </div>
+
+        <div class="actions">
+          <button id="submit-btn" type="submit">변환하기</button>
+          <button id="download-btn" type="button" disabled>다운로드</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel results">
+      <div id="status-box" class="status-box">파일을 업로드하고 변환을 실행하세요.</div>
+      <div class="preview-grid">
+        <article class="preview-card">
+          <h2>원본</h2>
+          <div class="preview-frame">
+            <img id="source-preview" alt="원본 미리보기">
+          </div>
+        </article>
+        <article class="preview-card">
+          <h2>변환 결과</h2>
+          <div class="preview-frame">
+            <img id="result-preview" alt="변환 결과 미리보기">
+          </div>
+        </article>
+      </div>
+      <div class="meta-panels">
+        <article class="meta-panel">
+          <h3>원본 정보</h3>
+          <dl id="source-meta-list" class="meta-list"></dl>
+        </article>
+        <article class="meta-panel">
+          <h3>변환 결과</h3>
+          <dl id="result-meta-list" class="meta-list"></dl>
+        </article>
+      </div>
+    </section>
+  </main>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

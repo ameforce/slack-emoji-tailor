@@ -1,0 +1,16 @@
+services:
+  slack-emoji-tailor:
+    image: ${IMAGE_REF}
+    ports:
+      - "127.0.0.1:${APP_HOST_PORT:-18082}:8000"
+    restart: unless-stopped
+    labels:
+      com.enmsoftware.app: slack-emoji-tailor
+      com.enmsoftware.environment: dev
+      com.enmsoftware.deployment.authority: jenkins
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

@@ -1,0 +1,279 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: #1f2937;
+  background:
+    radial-gradient(900px 500px at 20% -10%, #d8e6ff 0%, transparent 60%),
+    radial-gradient(800px 450px at 95% 0%, #d8fff1 0%, transparent 58%),
+    #f7f9ff;
+}
+
+.page {
+  width: min(1080px, 100%);
+  margin: 0 auto;
+  padding: 1.5rem 1rem 2.5rem;
+}
+
+.hero {
+  margin-bottom: 1.25rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: #eaedff;
+  color: #4f46e5;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+h1 {
+  margin: 0.8rem 0 0.45rem;
+  font-size: clamp(1.5rem, 2.8vw, 2.15rem);
+  line-height: 1.2;
+}
+
+.hero p {
+  margin: 0;
+  color: #4b5563;
+}
+
+.panel {
+  border: 1px solid #e7eaf8;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 12px 30px rgba(99, 102, 241, 0.08);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.form-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.drop-zone {
+  display: grid;
+  gap: 0.45rem;
+  border: 2px dashed #cfd7ff;
+  border-radius: 18px;
+  padding: 1rem;
+  background: #f6f8ff;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.drop-zone.drag-over {
+  border-color: #6366f1;
+  background: #eef1ff;
+}
+
+#file-input {
+  display: none;
+}
+
+.drop-title {
+  font-weight: 700;
+}
+
+.drop-subtitle,
+.selected-file {
+  color: #6b7280;
+  font-size: 0.9rem;
+}
+
+.option-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.field span {
+  font-size: 0.9rem;
+  color: #4b5563;
+}
+
+input,
+select,
+button {
+  border: 1px solid #d6dcf7;
+  border-radius: 14px;
+  font-size: 0.98rem;
+  padding: 0.65rem 0.8rem;
+  font-family: inherit;
+}
+
+input:focus,
+select:focus,
+button:focus {
+  outline: 2px solid #c7d2fe;
+  outline-offset: 1px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+#submit-btn {
+  border-color: #4f46e5;
+  background: #4f46e5;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+#submit-btn:hover {
+  background: #4338ca;
+}
+
+#download-btn {
+  background: #f3f4f6;
+  color: #111827;
+}
+
+#download-btn:disabled {
+  cursor: not-allowed;
+  color: #9ca3af;
+}
+
+.status-box {
+  min-height: 2.5rem;
+  border-radius: 14px;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  padding: 0.7rem 0.9rem;
+  color: #374151;
+  margin-bottom: 0.9rem;
+}
+
+.status-box.error {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.status-box.success {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.preview-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.85rem;
+}
+
+.preview-card {
+  border: 1px solid #ecedf5;
+  border-radius: 16px;
+  padding: 0.8rem;
+}
+
+.preview-card h2 {
+  margin: 0 0 0.65rem;
+  font-size: 1rem;
+}
+
+.preview-frame {
+  border-radius: 14px;
+  background:
+    linear-gradient(45deg, #eef2ff 25%, #f8fafc 25%, #f8fafc 50%, #eef2ff 50%, #eef2ff 75%, #f8fafc 75%);
+  background-size: 20px 20px;
+  border: 1px solid #e5e7eb;
+  min-height: 180px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.preview-frame img {
+  display: none;
+  max-width: 100%;
+  max-height: 300px;
+}
+
+.preview-frame img.ready {
+  display: block;
+}
+
+.meta-panels {
+  margin-top: 0.9rem;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+}
+
+.meta-panel {
+  border: 1px solid #ecedf5;
+  border-radius: 14px;
+  padding: 0.75rem 0.85rem;
+  background: #fbfcff;
+}
+
+.meta-panel h3 {
+  margin: 0 0 0.55rem;
+  font-size: 0.95rem;
+  color: #374151;
+}
+
+.meta-list {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.45rem;
+}
+
+.meta-list div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border-bottom: 1px dashed #e5e7eb;
+  padding-bottom: 0.2rem;
+  font-size: 0.9rem;
+}
+
+.meta-list dt {
+  color: #6b7280;
+}
+
+.meta-list dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+@media (min-width: 760px) {
+  .page {
+    padding: 2rem 1.5rem 3rem;
+  }
+
+  .panel {
+    padding: 1.25rem;
+  }
+
+  .option-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .preview-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .meta-panels {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
