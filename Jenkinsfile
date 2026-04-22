@@ -104,6 +104,11 @@ pipeline {
 
           env.GIT_COMMIT_RESOLVED = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
           env.GIT_COMMIT_SHORT = sh(returnStdout: true, script: 'git rev-parse --short=12 HEAD').trim()
+          sh 'git fetch --force --tags origin'
+          env.GIT_TAG_VERSION = sh(returnStdout: true, script: "git describe --tags --dirty --match 'v[0-9]*'").trim()
+          if (!env.GIT_TAG_VERSION) {
+            error('GIT_TAG_VERSION must be resolved from git tags.')
+          }
           env.IMAGE_TAG = "${env.DEPLOY_ENVIRONMENT}-${env.GIT_COMMIT_SHORT}-${env.BUILD_NUMBER}"
           env.IMAGE_REF = "${env.IMAGE_REPOSITORY}:${env.IMAGE_TAG}"
           env.MOVING_ALIAS_REF = "${env.IMAGE_REPOSITORY}:${env.DEPLOY_ENVIRONMENT}-latest"
@@ -113,8 +118,9 @@ pipeline {
             error('Deploy IMAGE_REF must be immutable and must not be a moving latest alias.')
           }
 
-          writeFile file: 'image-ref.txt', text: "IMAGE_REF=${env.IMAGE_REF}\nMOVING_ALIAS_REF=${env.MOVING_ALIAS_REF}\nIMAGE_DISTRIBUTION_MODE=${env.IMAGE_DISTRIBUTION_MODE_RESOLVED}\nDEPLOY_ENVIRONMENT=${env.DEPLOY_ENVIRONMENT}\nGIT_COMMIT=${env.GIT_COMMIT_RESOLVED}\nBRANCH=${env.DEPLOY_BRANCH}\n"
+          writeFile file: 'image-ref.txt', text: "IMAGE_REF=${env.IMAGE_REF}\nMOVING_ALIAS_REF=${env.MOVING_ALIAS_REF}\nIMAGE_DISTRIBUTION_MODE=${env.IMAGE_DISTRIBUTION_MODE_RESOLVED}\nDEPLOY_ENVIRONMENT=${env.DEPLOY_ENVIRONMENT}\nGIT_COMMIT=${env.GIT_COMMIT_RESOLVED}\nGIT_TAG_VERSION=${env.GIT_TAG_VERSION}\nBRANCH=${env.DEPLOY_BRANCH}\n"
           echo "Resolved ${env.DEPLOY_ENVIRONMENT} immutable image ref: ${env.IMAGE_REF}"
+          echo "Resolved git tag version: ${env.GIT_TAG_VERSION}"
         }
       }
     }
@@ -155,14 +161,13 @@ set -euo pipefail
 : "${IMAGE_REF:?IMAGE_REF is required}"
 : "${MOVING_ALIAS_REF:?MOVING_ALIAS_REF is required}"
 PATH="$PWD/.jenkins-uv/bin:$PATH"
-APP_VERSION="$(uv run python -c 'from app.versioning import get_display_version; print(get_display_version())')"
-: "${APP_VERSION:?APP_VERSION is required}"
+: "${GIT_TAG_VERSION:?GIT_TAG_VERSION is required}"
 docker build \
   --pull \
-  --build-arg "SLACK_EMOJI_TAILOR_VERSION=${APP_VERSION}" \
+  --build-arg "APP_GIT_TAG_VERSION=${GIT_TAG_VERSION}" \
   --label "org.opencontainers.image.revision=${GIT_COMMIT_RESOLVED}" \
   --label "org.opencontainers.image.source=${JOB_URL:-jenkins}" \
-  --label "org.opencontainers.image.version=${APP_VERSION}" \
+  --label "org.opencontainers.image.version=${GIT_TAG_VERSION}" \
   -t "$IMAGE_REF" \
   -t "$MOVING_ALIAS_REF" \
   .

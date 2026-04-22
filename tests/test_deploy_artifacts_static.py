@@ -294,24 +294,28 @@ def test_security_checklist_covers_operational_risk_controls() -> None:
     missing = [topic for topic in required_topics if topic not in checklist]
     assert not missing, f"security checklist is missing required topics: {missing}"
 
-def test_docker_and_jenkins_inject_app_visible_version_metadata() -> None:
+def test_docker_and_jenkins_inject_app_visible_git_tag_version_metadata() -> None:
     dockerfile = _read("Dockerfile")
     jenkinsfile = _read("Jenkinsfile")
 
+    assert "SLACK_EMOJI_TAILOR_VERSION" not in dockerfile
+    assert "SLACK_EMOJI_TAILOR_VERSION" not in jenkinsfile
     _assert_contains_all(
         dockerfile,
         [
-            "ARG SLACK_EMOJI_TAILOR_VERSION",
-            "ENV SLACK_EMOJI_TAILOR_VERSION=${SLACK_EMOJI_TAILOR_VERSION}",
+            "ARG APP_GIT_TAG_VERSION",
+            "app/_git_version",
+            "APP_GIT_TAG_VERSION is required",
         ],
-        label="Dockerfile version metadata",
+        label="Dockerfile git tag version metadata",
     )
     _assert_contains_all(
         jenkinsfile,
         [
-            "from app.versioning import get_display_version",
-            "--build-arg \"SLACK_EMOJI_TAILOR_VERSION=${APP_VERSION}\"",
-            "org.opencontainers.image.version=${APP_VERSION}",
+            "git fetch --force --tags origin",
+            "git describe --tags --dirty --match 'v[0-9]*'",
+            "--build-arg \"APP_GIT_TAG_VERSION=${GIT_TAG_VERSION}\"",
+            "org.opencontainers.image.version=${GIT_TAG_VERSION}",
         ],
-        label="Jenkinsfile version metadata",
+        label="Jenkinsfile git tag version metadata",
     )

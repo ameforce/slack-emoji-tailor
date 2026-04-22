@@ -61,7 +61,7 @@ class PortUnavailableError(RuntimeError):
 app = FastAPI(
     title="Slack Emoji Tailor",
     description="Convert images into Slack emoji-friendly assets.",
-    version="0.1.0",
+    version=get_display_version(),
 )
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
