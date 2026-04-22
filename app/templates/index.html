@@ -48,7 +48,7 @@
           </label>
 
           <label class="field">
-            <span>GIF 최대 프레임</span>
+            <span>GIF 프레임 목표/제한</span>
             <input
               id="max-frames"
               name="max_frames"
@@ -57,16 +57,17 @@
               max="50"
               value="{{ default_max_frames }}"
             >
+            <small class="field-hint">프레임 우선에서는 Slack 용량 내 원본 프레임을 우선 탐색하고, 다른 전략에서는 이 값을 제한으로 사용합니다.</small>
           </label>
 
           <label class="field">
             <span>GIF 최적화 전략</span>
             <select id="optimization-strategy" name="optimization_strategy">
-              <option value="frames" selected>프레임 우선</option>
+              <option value="frames" selected>프레임 우선 · 용량 내 최대 프레임 보존</option>
               <option value="quality">색상/화질 우선</option>
               <option value="balanced">균형</option>
             </select>
-            <small class="field-hint">GIF 변환 시 프레임 유지, 화질, 용량 균형을 선택합니다.</small>
+            <small class="field-hint">프레임 우선은 Slack 용량 내에서 가능한 많은 프레임을 먼저 보존합니다.</small>
           </label>
         </div>
 

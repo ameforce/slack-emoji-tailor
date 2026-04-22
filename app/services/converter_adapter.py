@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
@@ -21,6 +21,14 @@ class InputTooLargeError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class FrameCapMetadata:
+    requested_max_frames: int = 0
+    effective_max_frames: int = 0
+    frame_cap_mode: str = "none"
+    frame_reduction_reason: str = "none"
+
+
 @dataclass
 class ConversionPayload:
     data: bytes
@@ -28,6 +36,7 @@ class ConversionPayload:
     filename: str
     source_metadata: SourceMetadata
     metadata: ConvertMetadata
+    frame_cap_metadata: FrameCapMetadata = field(default_factory=FrameCapMetadata)
 
 
 def _resolve_output_info(format_name: str, original_filename: str | None) -> tuple[str, str]:
@@ -63,6 +72,33 @@ def inspect_source_metadata(file_bytes: bytes) -> SourceMetadata:
         raise ValueError("Unsupported or invalid image file.") from error
     except OSError as error:
         raise ValueError(f"Failed to read image data: {error}") from error
+
+
+def _frame_cap_metadata_from_result(
+    *,
+    result: object,
+    params: ConvertParams,
+    source_metadata: SourceMetadata,
+) -> FrameCapMetadata:
+    if not source_metadata.is_animated:
+        return FrameCapMetadata(
+            requested_max_frames=params.max_frames,
+            effective_max_frames=source_metadata.frame_count,
+            frame_cap_mode="none",
+            frame_reduction_reason="none",
+        )
+
+    requested_max_frames = getattr(result, "requested_max_frames", None)
+    effective_max_frames = getattr(result, "effective_max_frames", None)
+    frame_cap_mode = getattr(result, "frame_cap_mode", None)
+    frame_reduction_reason = getattr(result, "frame_reduction_reason", None)
+
+    return FrameCapMetadata(
+        requested_max_frames=int(requested_max_frames or params.max_frames),
+        effective_max_frames=int(effective_max_frames or params.max_frames),
+        frame_cap_mode=str(frame_cap_mode or "user"),
+        frame_reduction_reason=str(frame_reduction_reason or "none"),
+    )
 
 
 def convert_uploaded_image(
@@ -123,4 +159,9 @@ def convert_uploaded_image(
         filename=output_filename,
         source_metadata=source_metadata,
         metadata=metadata,
+        frame_cap_metadata=_frame_cap_metadata_from_result(
+            result=result,
+            params=params,
+            source_metadata=source_metadata,
+        ),
     )

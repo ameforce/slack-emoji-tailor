@@ -247,10 +247,58 @@
     return `${(bytes / 1024).toFixed(1)}KB`;
   }
 
+  function escapeHtml(value) {
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
   function renderRows(container, rows) {
     container.innerHTML = rows
-      .map(([key, value]) => `<div><dt>${key}</dt><dd>${value}</dd></div>`)
+      .map(([key, value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`)
       .join("");
+  }
+
+  function formatLabeledHeader(rawValue, labels) {
+    if (!rawValue) {
+      return "";
+    }
+    const label = labels[rawValue];
+    return label ? `${label} (${rawValue})` : rawValue;
+  }
+
+  function buildFrameCapRows(headers) {
+    const requestedMaxFrames = headers.get("x-requested-max-frames");
+    const effectiveMaxFrames = headers.get("x-effective-max-frames");
+    const frameCapMode = headers.get("x-frame-cap-mode");
+    const reductionReason = headers.get("x-frame-reduction-reason");
+
+    if (!requestedMaxFrames && !effectiveMaxFrames && !frameCapMode && !reductionReason) {
+      return [];
+    }
+
+    const modeLabels = {
+      user: "사용자 제한",
+      strategy: "프레임 우선 자동",
+      safety: "안전 상한",
+      "strategy+safety": "프레임 우선 안전 상한",
+    };
+    const reductionLabels = {
+      none: "없음",
+      "slack-size": "Slack 용량 제한",
+      "safe-cap": "안전 상한",
+      "identical-collapse": "동일 프레임 병합",
+    };
+
+    return [
+      ["Requested Max Frames", requestedMaxFrames || "-"],
+      ["Effective Max Frames", effectiveMaxFrames || "-"],
+      ["Frame Cap Mode", formatLabeledHeader(frameCapMode, modeLabels) || "-"],
+      ["Frame Reduction Reason", formatLabeledHeader(reductionReason, reductionLabels) || "-"],
+    ];
   }
 
   function renderMetadata(headers) {
@@ -273,6 +321,7 @@
       ["Frame Count", headers.get("x-result-frame-count") || "-"],
       ["Quality", headers.get("x-result-quality") || "-"],
       ["Strategy", headers.get("x-optimization-strategy") || "-"],
+      ...buildFrameCapRows(headers),
       ["Byte Size", formatByteSize(headers.get("x-result-byte-size"))],
       ["Target Reached", headers.get("x-target-reached") || "-"],
     ];

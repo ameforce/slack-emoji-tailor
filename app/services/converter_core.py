@@ -11,6 +11,8 @@ RESAMPLE_LANCZOS = getattr(Image, "Resampling", Image).LANCZOS
 QUANTIZE_FAST = getattr(getattr(Image, "Quantize", object), "FASTOCTREE", 2)
 DITHER_NONE = getattr(getattr(Image, "Dither", object), "NONE", 0)
 GIF_COLOR_CANDIDATES = (128, 112, 96, 80, 64, 56, 48, 40, 32, 24, 16)
+USER_MAX_FRAMES_LIMIT = 50
+GIF_FRAME_PRIORITY_SCAN_LIMIT = 300
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,13 @@ GIF_STRATEGY_WEIGHTS = {
 }
 
 
+@dataclass(frozen=True)
+class FrameCapDecision:
+    requested_max_frames: int
+    effective_max_frames: int
+    frame_cap_mode: str
+
+
 @dataclass
 class EncodeResult:
     data: bytes
@@ -37,6 +46,10 @@ class EncodeResult:
     frame_step: int = 1
     frame_count: int = 1
     quality: int = 0
+    requested_max_frames: int | None = None
+    effective_max_frames: int | None = None
+    frame_cap_mode: str = "none"
+    frame_reduction_reason: str = "none"
 
 
 def get_gif_strategy_weights(optimization_strategy: str) -> GifStrategyWeights:
@@ -48,6 +61,72 @@ def get_gif_strategy_weights(optimization_strategy: str) -> GifStrategyWeights:
             f"Unsupported GIF optimization strategy: {optimization_strategy!r}. "
             f"Supported values: {supported}."
         ) from error
+
+
+def resolve_effective_max_frames(
+    source_frame_count: int,
+    requested_max_frames: int,
+    optimization_strategy: str,
+) -> FrameCapDecision:
+    source_frame_count = max(1, source_frame_count)
+    requested_max_frames = max(1, requested_max_frames)
+    get_gif_strategy_weights(optimization_strategy)
+
+    if optimization_strategy != "frames":
+        return FrameCapDecision(
+            requested_max_frames=requested_max_frames,
+            effective_max_frames=requested_max_frames,
+            frame_cap_mode="user",
+        )
+
+    if source_frame_count > GIF_FRAME_PRIORITY_SCAN_LIMIT:
+        return FrameCapDecision(
+            requested_max_frames=requested_max_frames,
+            effective_max_frames=GIF_FRAME_PRIORITY_SCAN_LIMIT,
+            frame_cap_mode="safety",
+        )
+
+    return FrameCapDecision(
+        requested_max_frames=requested_max_frames,
+        effective_max_frames=source_frame_count,
+        frame_cap_mode="strategy",
+    )
+
+
+def classify_frame_reduction_reason(
+    *,
+    source_frame_count: int,
+    result_frame_step: int,
+    result_frame_count: int,
+    frame_cap: FrameCapDecision,
+) -> str:
+    if result_frame_step == 1 and result_frame_count >= source_frame_count:
+        return "none"
+    if result_frame_step == 1 and result_frame_count < source_frame_count:
+        return "identical-collapse"
+    if frame_cap.frame_cap_mode == "safety" and frame_cap.effective_max_frames < source_frame_count:
+        return "safe-cap"
+    if frame_cap.frame_cap_mode == "user" and frame_cap.effective_max_frames < source_frame_count:
+        return "user-cap"
+    return "slack-size"
+
+
+def apply_frame_cap_metadata(
+    result: EncodeResult,
+    *,
+    source_frame_count: int,
+    frame_cap: FrameCapDecision,
+) -> EncodeResult:
+    result.requested_max_frames = frame_cap.requested_max_frames
+    result.effective_max_frames = frame_cap.effective_max_frames
+    result.frame_cap_mode = frame_cap.frame_cap_mode
+    result.frame_reduction_reason = classify_frame_reduction_reason(
+        source_frame_count=source_frame_count,
+        result_frame_step=result.frame_step,
+        result_frame_count=result.frame_count,
+        frame_cap=frame_cap,
+    )
+    return result
 
 
 def score_gif_candidate(
@@ -385,8 +464,17 @@ def convert_gif_frames(
         if target_side is None
         else max(16, target_side)
     )
+    source_frame_count = len(source_frames)
     side_candidates = build_side_candidates(base_side)
-    step_candidates = build_step_candidates(len(source_frames), max_frames=max_frames)
+    frame_cap = resolve_effective_max_frames(
+        source_frame_count=source_frame_count,
+        requested_max_frames=max_frames,
+        optimization_strategy=optimization_strategy,
+    )
+    step_candidates = build_step_candidates(
+        source_frame_count,
+        max_frames=frame_cap.effective_max_frames,
+    )
     color_candidates = list(GIF_COLOR_CANDIDATES)
     best: EncodeResult | None = None
     min_step = step_candidates[0]
@@ -426,8 +514,16 @@ def convert_gif_frames(
         if best is None or len(candidate.data) < len(best.data):
             best = candidate
         if len(candidate.data) <= max_bytes:
-            return candidate
+            return apply_frame_cap_metadata(
+                candidate,
+                source_frame_count=source_frame_count,
+                frame_cap=frame_cap,
+            )
 
     if best is None:
         raise RuntimeError("Failed to encode GIF.")
-    return best
+    return apply_frame_cap_metadata(
+        best,
+        source_frame_count=source_frame_count,
+        frame_cap=frame_cap,
+    )

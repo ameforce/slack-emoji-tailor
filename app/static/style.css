@@ -282,6 +282,7 @@ button:focus {
 
 .meta-list div {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.5rem;
   border-bottom: 1px dashed #e5e7eb;
@@ -290,12 +291,16 @@ button:focus {
 }
 
 .meta-list dt {
+  flex: 1 1 auto;
   color: #6b7280;
 }
 
 .meta-list dd {
+  flex: 0 1 auto;
   margin: 0;
   font-weight: 600;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .version-badge {

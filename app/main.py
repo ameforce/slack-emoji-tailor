@@ -17,6 +17,7 @@ import uvicorn
 
 from app.schemas import ConvertParams
 from app.services.converter_adapter import (
+    ConversionPayload,
     MAX_UPLOAD_BYTES,
     InputTooLargeError,
     convert_uploaded_image,
@@ -144,6 +145,27 @@ def _content_disposition_attachment(filename: str) -> str:
     return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded_filename}"
 
 
+def _frame_cap_headers(converted: ConversionPayload, params: ConvertParams) -> dict[str, str]:
+    source_metadata = converted.source_metadata
+    frame_cap_metadata = converted.frame_cap_metadata
+    requested_max_frames = frame_cap_metadata.requested_max_frames or params.max_frames
+    effective_max_frames = (
+        frame_cap_metadata.effective_max_frames
+        or (source_metadata.frame_count if not source_metadata.is_animated else params.max_frames)
+    )
+    frame_cap_mode = frame_cap_metadata.frame_cap_mode or (
+        "none" if not source_metadata.is_animated else "user"
+    )
+    frame_reduction_reason = frame_cap_metadata.frame_reduction_reason or "none"
+
+    return {
+        "X-Requested-Max-Frames": str(requested_max_frames),
+        "X-Effective-Max-Frames": str(effective_max_frames),
+        "X-Frame-Cap-Mode": frame_cap_mode,
+        "X-Frame-Reduction-Reason": frame_reduction_reason,
+    }
+
+
 @app.post("/api/convert")
 async def convert_image(
     file: UploadFile = File(...),
@@ -194,6 +216,7 @@ async def convert_image(
         "X-Result-Colors": str(metadata.colors),
         "X-Result-Frame-Step": str(metadata.frame_step),
         "X-Result-Frame-Count": str(metadata.frame_count),
+        **_frame_cap_headers(converted, params),
         "X-Result-Quality": str(metadata.quality),
         "X-Optimization-Strategy": params.optimization_strategy,
         "X-Result-Byte-Size": str(metadata.byte_size),
