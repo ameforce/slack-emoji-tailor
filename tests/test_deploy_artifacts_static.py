@@ -315,7 +315,8 @@ def test_docker_and_jenkins_inject_app_visible_git_tag_version_metadata() -> Non
             "git fetch --force --tags origin",
             "git describe --tags --dirty --match 'v[0-9]*'",
             "--build-arg \"APP_GIT_TAG_VERSION=${GIT_TAG_VERSION}\"",
-            "org.opencontainers.image.version=${GIT_TAG_VERSION}",
+            "APP_DISPLAY_VERSION",
+            "org.opencontainers.image.version=${APP_DISPLAY_VERSION}",
         ],
         label="Jenkinsfile git tag version metadata",
     )

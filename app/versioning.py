@@ -10,7 +10,8 @@ _GIT_DESCRIBE_TIMEOUT_SECONDS = 1.0
 _LONG_DESCRIBE_RE = re.compile(
     r"^(?P<tag>.+)-(?P<count>\d+)-g(?P<sha>[0-9a-fA-F]+)(?P<dirty>-dirty)?$"
 )
-_TAG_VERSION_RE = re.compile(r"^v[0-9][0-9A-Za-z._-]*$")
+_TAG_VERSION_RE = re.compile(r"^v(?P<body>[0-9][0-9A-Za-z._-]*)$")
+_DIRTY_SUFFIX = "-dirty"
 
 
 class VersionResolutionError(RuntimeError):
@@ -24,19 +25,36 @@ def derive_display_version_from_describe(describe: str) -> str | None:
     if not value or any(char.isspace() for char in value):
         return None
 
-    long_match = _LONG_DESCRIBE_RE.match(value)
+    is_dirty = value.endswith(_DIRTY_SUFFIX)
+    clean_value = value[: -len(_DIRTY_SUFFIX)] if is_dirty else value
+
+    long_match = _LONG_DESCRIBE_RE.match(clean_value)
     if long_match:
         tag = long_match.group("tag")
-        if not _TAG_VERSION_RE.match(tag):
+        base = _tag_body(tag)
+        if base is None:
             return None
         ahead_count = int(long_match.group("count"))
-        if ahead_count == 0:
-            return tag
-        return value
+        version = base if ahead_count == 0 else f"{base}.{ahead_count}"
+        return _append_dirty_suffix(version, is_dirty)
 
-    if _TAG_VERSION_RE.match(value):
-        return value
+    exact = _tag_body(clean_value)
+    if exact is not None:
+        return _append_dirty_suffix(exact, is_dirty)
     return None
+
+
+def _tag_body(tag: str) -> str | None:
+    match = _TAG_VERSION_RE.match(tag)
+    if not match:
+        return None
+    return match.group("body")
+
+
+def _append_dirty_suffix(version: str, is_dirty: bool) -> str:
+    if not is_dirty:
+        return version
+    return f"{version}{_DIRTY_SUFFIX}"
 
 
 def _repo_root() -> Path:
