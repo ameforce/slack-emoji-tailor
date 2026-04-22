@@ -293,3 +293,25 @@ def test_security_checklist_covers_operational_risk_controls() -> None:
     ]
     missing = [topic for topic in required_topics if topic not in checklist]
     assert not missing, f"security checklist is missing required topics: {missing}"
+
+def test_docker_and_jenkins_inject_app_visible_version_metadata() -> None:
+    dockerfile = _read("Dockerfile")
+    jenkinsfile = _read("Jenkinsfile")
+
+    _assert_contains_all(
+        dockerfile,
+        [
+            "ARG SLACK_EMOJI_TAILOR_VERSION",
+            "ENV SLACK_EMOJI_TAILOR_VERSION=${SLACK_EMOJI_TAILOR_VERSION}",
+        ],
+        label="Dockerfile version metadata",
+    )
+    _assert_contains_all(
+        jenkinsfile,
+        [
+            "from app.versioning import get_display_version",
+            "--build-arg \"SLACK_EMOJI_TAILOR_VERSION=${APP_VERSION}\"",
+            "org.opencontainers.image.version=${APP_VERSION}",
+        ],
+        label="Jenkinsfile version metadata",
+    )

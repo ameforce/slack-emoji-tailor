@@ -20,7 +20,9 @@ from app.services.converter_adapter import (
     MAX_UPLOAD_BYTES,
     InputTooLargeError,
     convert_uploaded_image,
+    inspect_source_metadata,
 )
+from app.versioning import get_display_version
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -76,6 +78,7 @@ async def index(request: Request) -> HTMLResponse:
             "default_size": "auto",
             "default_fit": "stretch",
             "default_max_frames": 50,
+            "app_version": get_display_version(),
         },
     )
 
@@ -83,6 +86,19 @@ async def index(request: Request) -> HTMLResponse:
 @app.get("/healthz", response_class=JSONResponse)
 async def healthz() -> JSONResponse:
     return JSONResponse(content={"status": "ok"})
+
+
+@app.post("/api/inspect", response_class=JSONResponse)
+async def inspect_image(file: UploadFile = File(...)) -> JSONResponse:
+    try:
+        payload = await _read_upload_bounded(file, limit=MAX_UPLOAD_BYTES)
+        metadata = inspect_source_metadata(payload)
+    except InputTooLargeError as error:
+        raise HTTPException(status_code=413, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    return JSONResponse(content=metadata.model_dump())
 
 
 def _input_too_large_message(limit: int) -> str:
@@ -135,6 +151,7 @@ async def convert_image(
     size: str = Form("auto"),
     fit: str = Form("stretch"),
     max_frames: int = Form(50),
+    optimization_strategy: str = Form("frames"),
 ) -> Response:
     try:
         params = ConvertParams(
@@ -142,6 +159,7 @@ async def convert_image(
             size=size,
             fit=fit,
             max_frames=max_frames,
+            optimization_strategy=optimization_strategy,
         )
     except ValidationError as error:
         raise HTTPException(
@@ -177,6 +195,7 @@ async def convert_image(
         "X-Result-Frame-Step": str(metadata.frame_step),
         "X-Result-Frame-Count": str(metadata.frame_count),
         "X-Result-Quality": str(metadata.quality),
+        "X-Optimization-Strategy": params.optimization_strategy,
         "X-Result-Byte-Size": str(metadata.byte_size),
         "X-Target-Reached": str(metadata.target_reached).lower(),
     }

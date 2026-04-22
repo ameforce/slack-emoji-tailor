@@ -8,7 +8,7 @@ from PIL import Image
 import app.main as main_module
 import app.services.converter_adapter as converter_adapter
 from app.main import app
-from app.schemas import ConvertParams
+from app.schemas import ConvertMetadata, ConvertParams
 
 client = TestClient(app)
 
@@ -44,6 +44,70 @@ def test_convert_png_success() -> None:
     assert response.headers["x-result-format"] in {"PNG", "JPEG", "GIF"}
     assert int(response.headers["x-result-byte-size"]) == len(response.content)
     assert len(response.content) <= 128 * 1024
+    assert response.headers["x-optimization-strategy"] == "frames"
+
+
+def test_convert_passes_optimization_strategy_form_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, ConvertParams] = {}
+
+    def fake_convert_uploaded_image(
+        file_bytes: bytes,
+        original_filename: str | None,
+        params: ConvertParams,
+    ) -> converter_adapter.ConversionPayload:
+        captured["params"] = params
+        return converter_adapter.ConversionPayload(
+            data=b"converted",
+            media_type="image/gif",
+            filename="emoji_slack.gif",
+            source_metadata=converter_adapter.inspect_source_metadata(file_bytes),
+            metadata=ConvertMetadata(
+                format_name="GIF",
+                side=128,
+                colors=64,
+                frame_step=2,
+                frame_count=4,
+                quality=85,
+                byte_size=len(b"converted"),
+                target_reached=True,
+            ),
+        )
+
+    monkeypatch.setattr(main_module, "convert_uploaded_image", fake_convert_uploaded_image)
+
+    response = client.post(
+        "/api/convert",
+        files={"file": ("avatar.png", _make_png_bytes(), "image/png")},
+        data={
+            "max_kb": "128",
+            "size": "auto",
+            "fit": "cover",
+            "max_frames": "50",
+            "optimization_strategy": "quality",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["params"].optimization_strategy == "quality"
+    assert response.headers["x-optimization-strategy"] == "quality"
+
+
+def test_convert_rejects_invalid_optimization_strategy() -> None:
+    response = client.post(
+        "/api/convert",
+        files={"file": ("avatar.png", _make_png_bytes(), "image/png")},
+        data={
+            "max_kb": "128",
+            "size": "auto",
+            "fit": "cover",
+            "max_frames": "50",
+            "optimization_strategy": "tiny",
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_convert_with_non_ascii_filename_uses_safe_download_header() -> None:

@@ -24,6 +24,7 @@
           <span class="drop-title">이미지를 선택하거나 이 영역에 드래그</span>
           <span class="drop-subtitle">PNG, JPG, GIF, WebP (최대 10MB)</span>
           <span id="selected-file" class="selected-file">선택된 파일 없음</span>
+          <span id="source-insight" class="source-insight" hidden></span>
         </label>
 
         <div class="option-grid">
@@ -56,6 +57,16 @@
               max="50"
               value="{{ default_max_frames }}"
             >
+          </label>
+
+          <label class="field">
+            <span>GIF 최적화 전략</span>
+            <select id="optimization-strategy" name="optimization_strategy">
+              <option value="frames" selected>프레임 우선</option>
+              <option value="quality">색상/화질 우선</option>
+              <option value="balanced">균형</option>
+            </select>
+            <small class="field-hint">GIF 변환 시 프레임 유지, 화질, 용량 균형을 선택합니다.</small>
           </label>
         </div>
 
@@ -94,6 +105,9 @@
       </div>
     </section>
   </main>
+  <aside id="version-badge" class="version-badge" aria-label="애플리케이션 버전">
+    {{ app_version | default("dev") }}
+  </aside>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

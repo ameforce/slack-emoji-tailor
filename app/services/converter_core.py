@@ -10,6 +10,22 @@ from PIL import Image, ImageOps, ImageSequence
 RESAMPLE_LANCZOS = getattr(Image, "Resampling", Image).LANCZOS
 QUANTIZE_FAST = getattr(getattr(Image, "Quantize", object), "FASTOCTREE", 2)
 DITHER_NONE = getattr(getattr(Image, "Dither", object), "NONE", 0)
+GIF_COLOR_CANDIDATES = (128, 112, 96, 80, 64, 56, 48, 40, 32, 24, 16)
+
+
+@dataclass(frozen=True)
+class GifStrategyWeights:
+    frame: float
+    side: float
+    color: float
+    imbalance: float
+
+
+GIF_STRATEGY_WEIGHTS = {
+    "frames": GifStrategyWeights(frame=0.70, side=0.20, color=0.10, imbalance=0.06),
+    "quality": GifStrategyWeights(frame=0.12, side=0.53, color=0.35, imbalance=0.06),
+    "balanced": GifStrategyWeights(frame=0.34, side=0.33, color=0.33, imbalance=0.12),
+}
 
 
 @dataclass
@@ -21,6 +37,35 @@ class EncodeResult:
     frame_step: int = 1
     frame_count: int = 1
     quality: int = 0
+
+
+def get_gif_strategy_weights(optimization_strategy: str) -> GifStrategyWeights:
+    try:
+        return GIF_STRATEGY_WEIGHTS[optimization_strategy]
+    except KeyError as error:
+        supported = ", ".join(sorted(GIF_STRATEGY_WEIGHTS))
+        raise ValueError(
+            f"Unsupported GIF optimization strategy: {optimization_strategy!r}. "
+            f"Supported values: {supported}."
+        ) from error
+
+
+def score_gif_candidate(
+    *,
+    side_loss: float,
+    color_loss: float,
+    frame_loss: float,
+    weights: GifStrategyWeights,
+) -> float:
+    frame_penalty = math.sqrt(frame_loss)
+    losses = (side_loss, color_loss, frame_loss)
+    imbalance = max(losses) - min(losses)
+    return (
+        (weights.side * side_loss)
+        + (weights.color * color_loss)
+        + (weights.frame * frame_penalty)
+        + (weights.imbalance * imbalance)
+    )
 
 
 def parse_size_option(raw_value: str) -> int | None:
@@ -329,6 +374,7 @@ def convert_gif_frames(
     target_side: int | None,
     max_bytes: int,
     max_frames: int,
+    optimization_strategy: str = "frames",
 ) -> EncodeResult:
     if not source_frames:
         raise RuntimeError("No GIF frames found.")
@@ -341,16 +387,12 @@ def convert_gif_frames(
     )
     side_candidates = build_side_candidates(base_side)
     step_candidates = build_step_candidates(len(source_frames), max_frames=max_frames)
-    color_candidates = [128, 112, 96, 80, 64, 56, 48, 40, 32, 24, 16]
+    color_candidates = list(GIF_COLOR_CANDIDATES)
     best: EncodeResult | None = None
     min_step = step_candidates[0]
     max_step = step_candidates[-1]
     candidate_plan: List[Tuple[float, int, int, int]] = []
-
-    frame_weight = 0.70
-    side_weight = 0.20
-    color_weight = 0.10
-    imbalance_weight = 0.06
+    weights = get_gif_strategy_weights(optimization_strategy)
 
     for side in side_candidates:
         side_loss = 1.0 - (side / base_side)
@@ -359,17 +401,14 @@ def convert_gif_frames(
                 frame_loss = 0.0
             else:
                 frame_loss = (frame_step - min_step) / (max_step - min_step)
-            frame_penalty = math.sqrt(frame_loss)
 
             for colors in color_candidates:
                 color_loss = 1.0 - (colors / color_candidates[0])
-                losses = (side_loss, color_loss, frame_loss)
-                imbalance = max(losses) - min(losses)
-                score = (
-                    (side_weight * side_loss)
-                    + (color_weight * color_loss)
-                    + (frame_weight * frame_penalty)
-                    + (imbalance_weight * imbalance)
+                score = score_gif_candidate(
+                    side_loss=side_loss,
+                    color_loss=color_loss,
+                    frame_loss=frame_loss,
+                    weights=weights,
                 )
                 candidate_plan.append((score, side, frame_step, colors))
 

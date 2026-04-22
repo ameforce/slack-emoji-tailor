@@ -3,6 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 FitMode = Literal["stretch", "cover", "contain"]
+OptimizationStrategy = Literal["frames", "quality", "balanced"]
 
 
 class ConvertParams(BaseModel):
@@ -10,6 +11,7 @@ class ConvertParams(BaseModel):
     size: str = Field(default="auto")
     fit: FitMode = Field(default="stretch")
     max_frames: int = Field(default=50, ge=1, le=50)
+    optimization_strategy: OptimizationStrategy = Field(default="frames")
 
     @field_validator("size")
     @classmethod

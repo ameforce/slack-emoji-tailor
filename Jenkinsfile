@@ -154,10 +154,15 @@ uv run pytest -q
 set -euo pipefail
 : "${IMAGE_REF:?IMAGE_REF is required}"
 : "${MOVING_ALIAS_REF:?MOVING_ALIAS_REF is required}"
+PATH="$PWD/.jenkins-uv/bin:$PATH"
+APP_VERSION="$(uv run python -c 'from app.versioning import get_display_version; print(get_display_version())')"
+: "${APP_VERSION:?APP_VERSION is required}"
 docker build \
   --pull \
+  --build-arg "SLACK_EMOJI_TAILOR_VERSION=${APP_VERSION}" \
   --label "org.opencontainers.image.revision=${GIT_COMMIT_RESOLVED}" \
   --label "org.opencontainers.image.source=${JOB_URL:-jenkins}" \
+  --label "org.opencontainers.image.version=${APP_VERSION}" \
   -t "$IMAGE_REF" \
   -t "$MOVING_ALIAS_REF" \
   .

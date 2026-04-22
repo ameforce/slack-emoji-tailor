@@ -5,6 +5,7 @@
   const fileInput = document.getElementById("file-input");
   const dropZone = document.getElementById("drop-zone");
   const selectedFileLabel = document.getElementById("selected-file");
+  const sourceInsight = document.getElementById("source-insight");
   const statusBox = document.getElementById("status-box");
   const sourcePreview = document.getElementById("source-preview");
   const resultPreview = document.getElementById("result-preview");
@@ -12,12 +13,15 @@
   const resultMetaList = document.getElementById("result-meta-list");
   const submitButton = document.getElementById("submit-btn");
   const downloadButton = document.getElementById("download-btn");
+  const optimizationStrategy = document.getElementById("optimization-strategy");
 
   let sourceUrl = "";
   let resultUrl = "";
   let resultBlob = null;
   let downloadName = "emoji_slack.png";
   let selectedFile = null;
+  let inspectRequestId = 0;
+  let inspectAbortController = null;
 
   function setStatus(message, type) {
     statusBox.textContent = message;
@@ -44,6 +48,170 @@
     }
     const sizeKb = (file.size / 1024).toFixed(1);
     selectedFileLabel.textContent = `${file.name} (${sizeKb}KB)`;
+  }
+
+  function setSourceInsight(message, type) {
+    sourceInsight.textContent = message;
+    sourceInsight.hidden = !message;
+    sourceInsight.classList.remove("error", "loading", "neutral", "success");
+    if (message && type) {
+      sourceInsight.classList.add(type);
+    }
+  }
+
+  function isLikelyGif(file) {
+    const mimeType = (file.type || "").toLowerCase();
+    return mimeType === "image/gif" || /\.gif$/i.test(file.name || "");
+  }
+
+  function skipGifSubBlocks(bytes, offset) {
+    while (offset < bytes.length) {
+      const blockSize = bytes[offset];
+      offset += 1;
+      if (blockSize === 0) {
+        return offset;
+      }
+      offset += blockSize;
+    }
+    throw new Error("Invalid GIF sub-block structure.");
+  }
+
+  function countGifFrames(bytes) {
+    if (bytes.length < 13) {
+      throw new Error("GIF header is too short.");
+    }
+
+    const header = String.fromCharCode(...bytes.slice(0, 6));
+    if (header !== "GIF87a" && header !== "GIF89a") {
+      throw new Error("Not a GIF file.");
+    }
+
+    let offset = 13;
+    const logicalScreenPacked = bytes[10];
+    if (logicalScreenPacked & 0x80) {
+      offset += 3 * (1 << ((logicalScreenPacked & 0x07) + 1));
+    }
+
+    let frameCount = 0;
+    while (offset < bytes.length) {
+      const block = bytes[offset];
+      offset += 1;
+
+      if (block === 0x2c) {
+        if (offset + 9 > bytes.length) {
+          throw new Error("Invalid GIF image descriptor.");
+        }
+
+        const imagePacked = bytes[offset + 8];
+        offset += 9;
+        if (imagePacked & 0x80) {
+          offset += 3 * (1 << ((imagePacked & 0x07) + 1));
+        }
+
+        offset += 1; // LZW minimum code size.
+        offset = skipGifSubBlocks(bytes, offset);
+        frameCount += 1;
+      } else if (block === 0x21) {
+        offset += 1; // Extension label.
+        offset = skipGifSubBlocks(bytes, offset);
+      } else if (block === 0x3b) {
+        break;
+      } else {
+        throw new Error("Unknown GIF block.");
+      }
+    }
+
+    return frameCount;
+  }
+
+  function renderSourceInsightFromMetadata(metadata) {
+    const formatName = String(metadata.format_name || metadata.format || "").toUpperCase();
+    const rawFrameCount = metadata.frame_count ?? metadata.frames ?? metadata.n_frames;
+    const frameCount = Number(rawFrameCount);
+    const isAnimated = metadata.is_animated === true
+      || metadata.animated === true
+      || frameCount > 1;
+
+    if (formatName === "GIF") {
+      if (Number.isFinite(frameCount) && frameCount > 0) {
+        const suffix = isAnimated ? "변환 전 분석" : "정적 GIF";
+        setSourceInsight(`GIF 프레임: ${frameCount}개 (${suffix})`, "success");
+      } else {
+        setSourceInsight("GIF 프레임 수를 확인하지 못했습니다.", "neutral");
+      }
+      return;
+    }
+
+    setSourceInsight("GIF 애니메이션이 아닌 이미지입니다.", "neutral");
+  }
+
+  async function renderFallbackSourceInsight(file, requestId) {
+    if (!isLikelyGif(file)) {
+      if (requestId === inspectRequestId) {
+        setSourceInsight("GIF 애니메이션이 아닌 이미지입니다.", "neutral");
+      }
+      return;
+    }
+
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const frameCount = countGifFrames(bytes);
+      if (requestId !== inspectRequestId) {
+        return;
+      }
+      if (frameCount > 0) {
+        const suffix = frameCount > 1 ? "브라우저 분석" : "정적 GIF";
+        setSourceInsight(`GIF 프레임: ${frameCount}개 (${suffix})`, "success");
+      } else {
+        setSourceInsight("GIF 프레임 수를 확인하지 못했습니다. 변환 후 원본 정보에서 확인하세요.", "neutral");
+      }
+    } catch (error) {
+      if (requestId === inspectRequestId) {
+        setSourceInsight("GIF 프레임 수를 확인하지 못했습니다. 변환 후 원본 정보에서 확인하세요.", "error");
+      }
+    }
+  }
+
+  async function inspectSourceFile(file) {
+    inspectRequestId += 1;
+    const requestId = inspectRequestId;
+
+    if (inspectAbortController) {
+      inspectAbortController.abort();
+    }
+    inspectAbortController = typeof AbortController === "undefined" ? null : new AbortController();
+
+    if (!file) {
+      setSourceInsight("", "");
+      return;
+    }
+
+    setSourceInsight("원본 GIF 프레임 정보를 확인 중입니다...", "loading");
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const response = await fetch("/api/inspect", {
+        method: "POST",
+        body: formData,
+        signal: inspectAbortController ? inspectAbortController.signal : undefined,
+      });
+
+      if (!response.ok) {
+        throw new Error(`inspect failed with HTTP ${response.status}`);
+      }
+
+      const metadata = await response.json();
+      if (requestId === inspectRequestId) {
+        renderSourceInsightFromMetadata(metadata);
+      }
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        return;
+      }
+      await renderFallbackSourceInsight(file, requestId);
+    }
   }
 
   function refreshSourcePreview(file) {
@@ -104,6 +272,7 @@
       ["Frame Step", headers.get("x-result-frame-step") || "-"],
       ["Frame Count", headers.get("x-result-frame-count") || "-"],
       ["Quality", headers.get("x-result-quality") || "-"],
+      ["Strategy", headers.get("x-optimization-strategy") || "-"],
       ["Byte Size", formatByteSize(headers.get("x-result-byte-size"))],
       ["Target Reached", headers.get("x-target-reached") || "-"],
     ];
@@ -129,6 +298,10 @@
     formData.append("size", document.getElementById("size").value.trim() || "auto");
     formData.append("fit", document.getElementById("fit").value);
     formData.append("max_frames", document.getElementById("max-frames").value.trim() || "50");
+    formData.append(
+      "optimization_strategy",
+      optimizationStrategy ? optimizationStrategy.value || "frames" : "frames",
+    );
 
     try {
       const response = await fetch("/api/convert", {
@@ -185,6 +358,7 @@
     updateSelectedFileLabel(file);
     refreshSourcePreview(file);
     clearResultState();
+    inspectSourceFile(file);
     setStatus("설정을 확인하고 변환하기를 눌러 주세요.");
   }
 
@@ -203,6 +377,7 @@
     updateSelectedFileLabel(file);
     refreshSourcePreview(file);
     clearResultState();
+    inspectSourceFile(selectedFile);
     setStatus("설정을 확인하고 변환하기를 눌러 주세요.");
   });
 

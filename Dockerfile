@@ -13,11 +13,14 @@ RUN uv sync --frozen --no-dev
 
 FROM python:3.12-slim AS runtime
 
+ARG SLACK_EMOJI_TAILOR_VERSION=""
+
 WORKDIR /app
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV SLACK_EMOJI_TAILOR_VERSION=${SLACK_EMOJI_TAILOR_VERSION}
 
 COPY --from=builder /app/.venv /app/.venv
 COPY . .
