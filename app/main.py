@@ -17,10 +17,14 @@ import uvicorn
 
 from app.schemas import ConvertParams
 from app.services.converter_adapter import (
+    ConversionPayload,
     MAX_UPLOAD_BYTES,
     InputTooLargeError,
     convert_uploaded_image,
+    inspect_source_metadata,
 )
+from app.services.converter_core import USER_MAX_FRAMES_LIMIT
+from app.versioning import get_display_version
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -58,7 +62,7 @@ class PortUnavailableError(RuntimeError):
 app = FastAPI(
     title="Slack Emoji Tailor",
     description="Convert images into Slack emoji-friendly assets.",
-    version="0.1.0",
+    version=get_display_version(),
 )
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -76,6 +80,8 @@ async def index(request: Request) -> HTMLResponse:
             "default_size": "auto",
             "default_fit": "stretch",
             "default_max_frames": 50,
+            "max_frames_limit": USER_MAX_FRAMES_LIMIT,
+            "app_version": get_display_version(),
         },
     )
 
@@ -83,6 +89,19 @@ async def index(request: Request) -> HTMLResponse:
 @app.get("/healthz", response_class=JSONResponse)
 async def healthz() -> JSONResponse:
     return JSONResponse(content={"status": "ok"})
+
+
+@app.post("/api/inspect", response_class=JSONResponse)
+async def inspect_image(file: UploadFile = File(...)) -> JSONResponse:
+    try:
+        payload = await _read_upload_bounded(file, limit=MAX_UPLOAD_BYTES)
+        metadata = inspect_source_metadata(payload)
+    except InputTooLargeError as error:
+        raise HTTPException(status_code=413, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    return JSONResponse(content=metadata.model_dump())
 
 
 def _input_too_large_message(limit: int) -> str:
@@ -128,6 +147,30 @@ def _content_disposition_attachment(filename: str) -> str:
     return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded_filename}"
 
 
+def _frame_cap_headers(converted: ConversionPayload, params: ConvertParams) -> dict[str, str]:
+    source_metadata = converted.source_metadata
+    frame_cap_metadata = converted.frame_cap_metadata
+    requested_max_frames = frame_cap_metadata.requested_max_frames or params.max_frames
+    effective_max_frames = (
+        frame_cap_metadata.effective_max_frames
+        or (source_metadata.frame_count if not source_metadata.is_animated else params.max_frames)
+    )
+    frame_cap_mode = frame_cap_metadata.frame_cap_mode or (
+        "none" if not source_metadata.is_animated else "user"
+    )
+    frame_reduction_reason = frame_cap_metadata.frame_reduction_reason or "none"
+
+    return {
+        "X-Requested-Max-Frames": str(requested_max_frames),
+        "X-Effective-Max-Frames": str(effective_max_frames),
+        "X-Frame-Cap-Mode": frame_cap_mode,
+        "X-Frame-Reduction-Reason": frame_reduction_reason,
+        "X-Gif-Candidate-Budget": str(frame_cap_metadata.candidate_budget),
+        "X-Gif-Candidate-Attempts": str(frame_cap_metadata.candidate_attempts),
+        "X-Gif-Search-Exhausted": str(frame_cap_metadata.gif_search_exhausted).lower(),
+    }
+
+
 @app.post("/api/convert")
 async def convert_image(
     file: UploadFile = File(...),
@@ -135,6 +178,7 @@ async def convert_image(
     size: str = Form("auto"),
     fit: str = Form("stretch"),
     max_frames: int = Form(50),
+    optimization_strategy: str = Form("frames"),
 ) -> Response:
     try:
         params = ConvertParams(
@@ -142,6 +186,7 @@ async def convert_image(
             size=size,
             fit=fit,
             max_frames=max_frames,
+            optimization_strategy=optimization_strategy,
         )
     except ValidationError as error:
         raise HTTPException(
@@ -176,7 +221,9 @@ async def convert_image(
         "X-Result-Colors": str(metadata.colors),
         "X-Result-Frame-Step": str(metadata.frame_step),
         "X-Result-Frame-Count": str(metadata.frame_count),
+        **_frame_cap_headers(converted, params),
         "X-Result-Quality": str(metadata.quality),
+        "X-Optimization-Strategy": params.optimization_strategy,
         "X-Result-Byte-Size": str(metadata.byte_size),
         "X-Target-Reached": str(metadata.target_reached).lower(),
     }

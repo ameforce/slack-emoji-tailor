@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import math
 from dataclasses import dataclass
+from heapq import nsmallest
 from typing import List, Sequence, Tuple
 
 from PIL import Image, ImageOps, ImageSequence
@@ -10,6 +11,33 @@ from PIL import Image, ImageOps, ImageSequence
 RESAMPLE_LANCZOS = getattr(Image, "Resampling", Image).LANCZOS
 QUANTIZE_FAST = getattr(getattr(Image, "Quantize", object), "FASTOCTREE", 2)
 DITHER_NONE = getattr(getattr(Image, "Dither", object), "NONE", 0)
+GIF_COLOR_CANDIDATES = (128, 112, 96, 80, 64, 56, 48, 40, 32, 24, 16)
+GIF_FRAME_PRIORITY_SCAN_LIMIT = 300
+USER_MAX_FRAMES_LIMIT = GIF_FRAME_PRIORITY_SCAN_LIMIT
+GIF_CANDIDATE_MAX_ATTEMPTS = 240
+GIF_FRAME_PRIORITY_FULL_FRAME_ATTEMPTS = 48
+
+
+@dataclass(frozen=True)
+class GifStrategyWeights:
+    frame: float
+    side: float
+    color: float
+    imbalance: float
+
+
+GIF_STRATEGY_WEIGHTS = {
+    "frames": GifStrategyWeights(frame=0.70, side=0.20, color=0.10, imbalance=0.06),
+    "quality": GifStrategyWeights(frame=0.12, side=0.53, color=0.35, imbalance=0.06),
+    "balanced": GifStrategyWeights(frame=0.34, side=0.33, color=0.33, imbalance=0.12),
+}
+
+
+@dataclass(frozen=True)
+class FrameCapDecision:
+    requested_max_frames: int
+    effective_max_frames: int
+    frame_cap_mode: str
 
 
 @dataclass
@@ -21,6 +49,123 @@ class EncodeResult:
     frame_step: int = 1
     frame_count: int = 1
     quality: int = 0
+    requested_max_frames: int | None = None
+    effective_max_frames: int | None = None
+    frame_cap_mode: str = "none"
+    frame_reduction_reason: str = "none"
+    candidate_budget: int = 0
+    candidate_attempts: int = 0
+    gif_search_exhausted: bool = False
+
+
+def get_gif_strategy_weights(optimization_strategy: str) -> GifStrategyWeights:
+    try:
+        return GIF_STRATEGY_WEIGHTS[optimization_strategy]
+    except KeyError as error:
+        supported = ", ".join(sorted(GIF_STRATEGY_WEIGHTS))
+        raise ValueError(
+            f"Unsupported GIF optimization strategy: {optimization_strategy!r}. "
+            f"Supported values: {supported}."
+        ) from error
+
+
+def resolve_effective_max_frames(
+    source_frame_count: int,
+    requested_max_frames: int,
+    optimization_strategy: str,
+) -> FrameCapDecision:
+    source_frame_count = max(1, source_frame_count)
+    requested_max_frames = max(1, requested_max_frames)
+    get_gif_strategy_weights(optimization_strategy)
+
+    if optimization_strategy != "frames":
+        return FrameCapDecision(
+            requested_max_frames=requested_max_frames,
+            effective_max_frames=requested_max_frames,
+            frame_cap_mode="user",
+        )
+
+    if source_frame_count > GIF_FRAME_PRIORITY_SCAN_LIMIT:
+        return FrameCapDecision(
+            requested_max_frames=requested_max_frames,
+            effective_max_frames=GIF_FRAME_PRIORITY_SCAN_LIMIT,
+            frame_cap_mode="safety",
+        )
+
+    return FrameCapDecision(
+        requested_max_frames=requested_max_frames,
+        effective_max_frames=source_frame_count,
+        frame_cap_mode="strategy",
+    )
+
+
+def classify_frame_reduction_reason(
+    *,
+    source_frame_count: int,
+    result_frame_step: int,
+    result_frame_count: int,
+    frame_cap: FrameCapDecision,
+) -> str:
+    if result_frame_step == 1 and result_frame_count >= source_frame_count:
+        return "none"
+    if result_frame_step == 1 and result_frame_count < source_frame_count:
+        return "identical-collapse"
+    if frame_cap.frame_cap_mode == "safety" and frame_cap.effective_max_frames < source_frame_count:
+        return "safe-cap"
+    if frame_cap.frame_cap_mode == "user" and frame_cap.effective_max_frames < source_frame_count:
+        return "user-cap"
+    return "slack-size"
+
+
+def apply_frame_cap_metadata(
+    result: EncodeResult,
+    *,
+    source_frame_count: int,
+    frame_cap: FrameCapDecision,
+) -> EncodeResult:
+    result.requested_max_frames = frame_cap.requested_max_frames
+    result.effective_max_frames = frame_cap.effective_max_frames
+    result.frame_cap_mode = frame_cap.frame_cap_mode
+    result.frame_reduction_reason = classify_frame_reduction_reason(
+        source_frame_count=source_frame_count,
+        result_frame_step=result.frame_step,
+        result_frame_count=result.frame_count,
+        frame_cap=frame_cap,
+    )
+    if result.gif_search_exhausted:
+        result.frame_reduction_reason = "budget-limit"
+    return result
+
+
+def apply_gif_search_metadata(
+    result: EncodeResult,
+    *,
+    candidate_budget: int,
+    candidate_attempts: int,
+    search_exhausted: bool,
+) -> EncodeResult:
+    result.candidate_budget = candidate_budget
+    result.candidate_attempts = candidate_attempts
+    result.gif_search_exhausted = search_exhausted
+    return result
+
+
+def score_gif_candidate(
+    *,
+    side_loss: float,
+    color_loss: float,
+    frame_loss: float,
+    weights: GifStrategyWeights,
+) -> float:
+    frame_penalty = math.sqrt(frame_loss)
+    losses = (side_loss, color_loss, frame_loss)
+    imbalance = max(losses) - min(losses)
+    return (
+        (weights.side * side_loss)
+        + (weights.color * color_loss)
+        + (weights.frame * frame_penalty)
+        + (weights.imbalance * imbalance)
+    )
 
 
 def parse_size_option(raw_value: str) -> int | None:
@@ -198,6 +343,118 @@ def build_step_candidates(frame_count: int, max_frames: int) -> List[int]:
     return unique_preserve_order(candidates)
 
 
+def _frame_priority_candidates(
+    side_candidates: Sequence[int],
+    step_candidates: Sequence[int],
+    color_candidates: Sequence[int],
+) -> Tuple[List[Tuple[int, int, int]], bool]:
+    if not step_candidates:
+        return [], False
+
+    yielded: set[Tuple[int, int, int]] = set()
+    candidates: List[Tuple[int, int, int]] = []
+    frame_preserving_step = step_candidates[0]
+
+    def append_candidate(candidate: Tuple[int, int, int]) -> bool:
+        if candidate in yielded:
+            return False
+        if len(candidates) >= GIF_CANDIDATE_MAX_ATTEMPTS:
+            return True
+        yielded.add(candidate)
+        candidates.append(candidate)
+        return False
+
+    for side in side_candidates:
+        for colors in color_candidates:
+            candidate = (side, frame_preserving_step, colors)
+            if append_candidate(candidate):
+                return candidates, True
+            if len(candidates) >= GIF_FRAME_PRIORITY_FULL_FRAME_ATTEMPTS:
+                break
+        if len(candidates) >= GIF_FRAME_PRIORITY_FULL_FRAME_ATTEMPTS:
+            break
+
+    for frame_step in step_candidates[1:]:
+        for side in side_candidates:
+            for colors in color_candidates:
+                candidate = (side, frame_step, colors)
+                if append_candidate(candidate):
+                    return candidates, True
+
+    for side in side_candidates:
+        for colors in color_candidates:
+            candidate = (side, frame_preserving_step, colors)
+            if append_candidate(candidate):
+                return candidates, True
+
+    return candidates, False
+
+
+def _scored_gif_candidates(
+    side_candidates: Sequence[int],
+    step_candidates: Sequence[int],
+    color_candidates: Sequence[int],
+    *,
+    base_side: int,
+    weights: GifStrategyWeights,
+) -> Tuple[List[Tuple[int, int, int]], bool]:
+    if not step_candidates:
+        return [], False
+
+    min_step = step_candidates[0]
+    max_step = step_candidates[-1]
+
+    def scored_candidates():
+        for side in side_candidates:
+            side_loss = 1.0 - (side / base_side)
+            for frame_step in step_candidates:
+                if max_step == min_step:
+                    frame_loss = 0.0
+                else:
+                    frame_loss = (frame_step - min_step) / (max_step - min_step)
+
+                for colors in color_candidates:
+                    color_loss = 1.0 - (colors / color_candidates[0])
+                    score = score_gif_candidate(
+                        side_loss=side_loss,
+                        color_loss=color_loss,
+                        frame_loss=frame_loss,
+                        weights=weights,
+                    )
+                    yield (score, frame_step, -side, -colors, side, colors)
+
+    candidate_plan = nsmallest(GIF_CANDIDATE_MAX_ATTEMPTS + 1, scored_candidates())
+    candidates = [
+        (side, frame_step, colors)
+        for _, frame_step, _, _, side, colors in candidate_plan[:GIF_CANDIDATE_MAX_ATTEMPTS]
+    ]
+    return candidates, len(candidate_plan) > GIF_CANDIDATE_MAX_ATTEMPTS
+
+
+def build_gif_candidate_order(
+    side_candidates: Sequence[int],
+    step_candidates: Sequence[int],
+    color_candidates: Sequence[int],
+    *,
+    base_side: int,
+    optimization_strategy: str,
+) -> Tuple[List[Tuple[int, int, int]], bool]:
+    weights = get_gif_strategy_weights(optimization_strategy)
+    if optimization_strategy == "frames":
+        return _frame_priority_candidates(
+            side_candidates=side_candidates,
+            step_candidates=step_candidates,
+            color_candidates=color_candidates,
+        )
+    return _scored_gif_candidates(
+        side_candidates=side_candidates,
+        step_candidates=step_candidates,
+        color_candidates=color_candidates,
+        base_side=base_side,
+        weights=weights,
+    )
+
+
 def convert_static(
     image: Image.Image,
     fit_mode: str,
@@ -329,6 +586,7 @@ def convert_gif_frames(
     target_side: int | None,
     max_bytes: int,
     max_frames: int,
+    optimization_strategy: str = "frames",
 ) -> EncodeResult:
     if not source_frames:
         raise RuntimeError("No GIF frames found.")
@@ -339,43 +597,30 @@ def convert_gif_frames(
         if target_side is None
         else max(16, target_side)
     )
+    source_frame_count = len(source_frames)
     side_candidates = build_side_candidates(base_side)
-    step_candidates = build_step_candidates(len(source_frames), max_frames=max_frames)
-    color_candidates = [128, 112, 96, 80, 64, 56, 48, 40, 32, 24, 16]
+    frame_cap = resolve_effective_max_frames(
+        source_frame_count=source_frame_count,
+        requested_max_frames=max_frames,
+        optimization_strategy=optimization_strategy,
+    )
+    step_candidates = build_step_candidates(
+        source_frame_count,
+        max_frames=frame_cap.effective_max_frames,
+    )
+    color_candidates = list(GIF_COLOR_CANDIDATES)
     best: EncodeResult | None = None
-    min_step = step_candidates[0]
-    max_step = step_candidates[-1]
-    candidate_plan: List[Tuple[float, int, int, int]] = []
+    candidate_budget = GIF_CANDIDATE_MAX_ATTEMPTS
+    candidate_attempts = 0
+    candidate_order, has_more_candidates = build_gif_candidate_order(
+        side_candidates=side_candidates,
+        step_candidates=step_candidates,
+        color_candidates=color_candidates,
+        base_side=base_side,
+        optimization_strategy=optimization_strategy,
+    )
 
-    frame_weight = 0.70
-    side_weight = 0.20
-    color_weight = 0.10
-    imbalance_weight = 0.06
-
-    for side in side_candidates:
-        side_loss = 1.0 - (side / base_side)
-        for frame_step in step_candidates:
-            if max_step == min_step:
-                frame_loss = 0.0
-            else:
-                frame_loss = (frame_step - min_step) / (max_step - min_step)
-            frame_penalty = math.sqrt(frame_loss)
-
-            for colors in color_candidates:
-                color_loss = 1.0 - (colors / color_candidates[0])
-                losses = (side_loss, color_loss, frame_loss)
-                imbalance = max(losses) - min(losses)
-                score = (
-                    (side_weight * side_loss)
-                    + (color_weight * color_loss)
-                    + (frame_weight * frame_penalty)
-                    + (imbalance_weight * imbalance)
-                )
-                candidate_plan.append((score, side, frame_step, colors))
-
-    candidate_plan.sort(key=lambda item: (item[0], item[2], -item[1], -item[3]))
-
-    for _, side, frame_step, colors in candidate_plan:
+    for side, frame_step, colors in candidate_order:
         candidate = encode_gif(
             source_frames=source_frames,
             source_durations=source_durations,
@@ -384,11 +629,32 @@ def convert_gif_frames(
             frame_step=frame_step,
             colors=colors,
         )
+        candidate_attempts += 1
         if best is None or len(candidate.data) < len(best.data):
             best = candidate
         if len(candidate.data) <= max_bytes:
-            return candidate
+            apply_gif_search_metadata(
+                candidate,
+                candidate_budget=candidate_budget,
+                candidate_attempts=candidate_attempts,
+                search_exhausted=False,
+            )
+            return apply_frame_cap_metadata(
+                candidate,
+                source_frame_count=source_frame_count,
+                frame_cap=frame_cap,
+            )
 
     if best is None:
         raise RuntimeError("Failed to encode GIF.")
-    return best
+    apply_gif_search_metadata(
+        best,
+        candidate_budget=candidate_budget,
+        candidate_attempts=candidate_attempts,
+        search_exhausted=has_more_candidates and candidate_attempts >= candidate_budget,
+    )
+    return apply_frame_cap_metadata(
+        best,
+        source_frame_count=source_frame_count,
+        frame_cap=frame_cap,
+    )

@@ -20,12 +20,14 @@ Use this checklist before enabling or re-running the Jenkins branch-routed deplo
 - [ ] Remote pull login uses an isolated `DOCKER_CONFIG` (isolated DOCKER_CONFIG) under the deploy path with restricted permissions, not the default user Docker config unless that is the approved pre-provisioned path.
 - [ ] Registry credential IDs may appear in sanitized previews; registry secrets, tokens, and passwords must not appear in console logs or artifacts.
 
-## External public-check proof
+## Same-server public URL/API smoke and future true-external proof
 
-- [ ] `PUBLIC_CHECK_AGENT_LABEL` points to a Jenkins agent/probe outside enm-server and outside the Jenkins controller host.
-- [ ] The public-health stage archives proof such as `hostname` and `hostnamectl` output and fails if that proof identifies `enm-server` or the controller host.
-- [ ] The public check curls `PUBLIC_HEALTHCHECK_URL` directly from the public-check agent with TLS verification enabled; it is not an SSH/on-host curl.
-- [ ] A failed public health check fails the deployment. When a previous image exists, it must trigger rollback even if local health passed.
+- [ ] The immediate single-server gate runs same-server public URL/API smoke from the already allocated Jenkins build/deploy agent; it must not queue for an unavailable `external-http-check` label after mutation.
+- [ ] The smoke archives `public-smoke-scope.txt` with `scope=same-server` and `external-proof=false`, and operators understand this is not true external proof.
+- [ ] The smoke curls `PUBLIC_HEALTHCHECK_URL`, `/api/inspect`, and `/api/convert` directly through the public HTTPS origin with TLS verification enabled; it is not an SSH/on-host curl.
+- [ ] Dev signoff true external proof runs `SMOKE_SCOPE=external EXTERNAL_PROOF=true BASE_URL=https://dev.emoji.enmsoftware.com scripts/deploy/public-gif-smoke.sh` from a repo checkout outside `enm-server`, then records `smoke_scope=external`, `external_proof=true`, and `true external proof` in the deployment evidence.
+- [ ] A failed same-server public URL/API smoke fails the deployment. When a previous image exists, it must trigger rollback even if local health passed.
+- [ ] Optional future true-external proof as a Jenkins-blocking gate has a real external runner/probe, owner, credentials, and a pre-mutation fail-fast path before it becomes required for deployment; do not create a second same-server Jenkins agent solely to satisfy this checkbox.
 
 ## Secret redaction and artifact hygiene
 
@@ -38,14 +40,18 @@ Use this checklist before enabling or re-running the Jenkins branch-routed deplo
 
 - [ ] Before activation, Jenkins records previous and current image markers in the remote deploy path.
 - [ ] `scripts/deploy/jenkins-enm-deploy.sh` runs compose mutations under remote `flock` to prevent concurrent writes.
-- [ ] If local or external public health fails after activation and `PREVIOUS_IMAGE` exists, Jenkins invokes the rollback path and archives rollback evidence.
+- [ ] If local health or same-server public URL/API smoke fails after activation and `PREVIOUS_IMAGE` exists, Jenkins invokes the rollback path and archives rollback evidence.
 - [ ] If no previous image exists, Jenkins records `NO_PREVIOUS_IMAGE_AVAILABLE`, runs `docker compose down` for the failed first install, archives evidence, and fails the build without claiming success.
 - [ ] Rollback remains Jenkins-mediated; do not perform manual server deployment commands as the success path.
 
 ## Jenkins job setup
 
-- [ ] Job parameters are configured for `BUILD_AGENT_LABEL`, `PUBLIC_CHECK_AGENT_LABEL`, `DEPLOY_HOST`, `DEPLOY_SSH_USER`, optional `DEPLOY_PATH`, `DEPLOY_SSH_CREDENTIALS_ID`, `IMAGE_DISTRIBUTION_MODE`, `LOCAL_IMAGE_REPOSITORY`, optional registry settings, optional `DEPLOY_APP_PORT`, optional `LOCAL_HEALTHCHECK_URL`, optional `PUBLIC_HEALTHCHECK_URL`, optional `DEPLOY_COMPOSE_PROJECT`, and `DEPLOY_ALLOWED_BRANCHES`.
+- [ ] Job parameters are configured for `BUILD_AGENT_LABEL`, `DEPLOY_HOST`, `DEPLOY_SSH_USER`, optional `DEPLOY_PATH`, `DEPLOY_SSH_CREDENTIALS_ID`, `IMAGE_DISTRIBUTION_MODE`, `LOCAL_IMAGE_REPOSITORY`, optional registry settings, optional `DEPLOY_APP_PORT`, optional `LOCAL_HEALTHCHECK_URL`, optional `PUBLIC_HEALTHCHECK_URL`, optional `DEPLOY_COMPOSE_PROJECT`, and `DEPLOY_ALLOWED_BRANCHES`.
 - [ ] `RUN_DEPLOY=false` is the safe default for new or unreviewed jobs; first execution should use `DEPLOY_DRY_RUN=true` and archive the preview.
+- [ ] Every non-main branch is allowed to build and may deploy only when an operator explicitly sets `RUN_DEPLOY=true`; branch indexing or normal test builds must not overwrite shared dev by default.
+- [ ] All non-main branches share dev, and the last successful non-main deploy wins for `dev.emoji.enmsoftware.com`. Record the branch name, image reference, and Jenkins build URL in deploy evidence so the current shared-dev owner is visible.
+- [ ] A `main` deploy is production-impacting. Use `DEPLOY_DRY_RUN=true` to inspect the prod preview before any live production mutation unless explicit production authorization has already been recorded.
 - [ ] Build serialization is enabled (`disableConcurrentBuilds` plus remote `flock`) so two deploys cannot mutate the same compose project at once.
 - [ ] Branch routing is confirmed: `main` targets `emoji.enmsoftware.com` on `127.0.0.1:3100`; non-`main` targets `dev.emoji.enmsoftware.com` on `127.0.0.1:18082`.
+- [ ] Target override mismatches are rejected: non-`main` targets `dev.emoji.enmsoftware.com` and cannot point at prod path/port/project/URL; `main` targets `emoji.enmsoftware.com` and cannot point at shared dev path/port/project/URL.
 - [ ] No nginx, no DNS, Certbot, or reverse-proxy mutation is performed by this repo or Jenkins job. Those changes are external prerequisites only, and failure to meet them must keep the Jenkins deployment red.

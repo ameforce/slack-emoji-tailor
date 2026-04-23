@@ -2,14 +2,18 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.services.converter_core import USER_MAX_FRAMES_LIMIT
+
 FitMode = Literal["stretch", "cover", "contain"]
+OptimizationStrategy = Literal["frames", "quality", "balanced"]
 
 
 class ConvertParams(BaseModel):
     max_kb: int = Field(default=128, ge=1, le=512)
     size: str = Field(default="auto")
     fit: FitMode = Field(default="stretch")
-    max_frames: int = Field(default=50, ge=1, le=50)
+    max_frames: int = Field(default=50, ge=1, le=USER_MAX_FRAMES_LIMIT)
+    optimization_strategy: OptimizationStrategy = Field(default="frames")
 
     @field_validator("size")
     @classmethod
