@@ -87,7 +87,14 @@
   }
 
   function normalizeIntegerFormValue(inputElement, fallbackValue) {
-    return String(readPositiveInteger(inputElement, Number.parseInt(fallbackValue, 10) || 50));
+    const normalizedValue = readPositiveInteger(inputElement, Number.parseInt(fallbackValue, 10) || 50);
+    const maxValue = inputElement
+      ? Number.parseInt(inputElement.max || "", 10)
+      : Number.NaN;
+    if (Number.isFinite(maxValue) && maxValue > 0) {
+      return String(Math.min(normalizedValue, maxValue));
+    }
+    return String(normalizedValue);
   }
 
   function isLikelyGif(file) {
@@ -186,7 +193,31 @@
     renderFrameTargetInsight();
   }
 
-  function buildFrameTargetMessage(metadata, strategy, requestedMaxFrames) {
+  function resolveMaxFramesInputLimit(metadata) {
+    const hasGifSourceFrames = metadata
+      && metadata.formatName === "GIF"
+      && Number.isFinite(metadata.frameCount)
+      && metadata.frameCount > 0;
+    if (hasGifSourceFrames) {
+      return Math.max(1, Math.min(metadata.frameCount, FRAME_PRIORITY_SCAN_LIMIT));
+    }
+    return FRAME_PRIORITY_SCAN_LIMIT;
+  }
+
+  function syncMaxFramesInputLimit(metadata, strategy) {
+    if (!maxFramesInput) {
+      return FRAME_PRIORITY_SCAN_LIMIT;
+    }
+    const effectiveInputLimit = resolveMaxFramesInputLimit(metadata, strategy);
+    maxFramesInput.max = String(effectiveInputLimit);
+    const requestedValue = readPositiveInteger(maxFramesInput, Math.min(50, effectiveInputLimit));
+    if (requestedValue > effectiveInputLimit) {
+      maxFramesInput.value = String(effectiveInputLimit);
+    }
+    return effectiveInputLimit;
+  }
+
+  function buildFrameTargetMessage(metadata, strategy, requestedMaxFrames, inputLimit) {
     const hasGifSourceFrames = metadata
       && metadata.formatName === "GIF"
       && Number.isFinite(metadata.frameCount)
@@ -194,27 +225,28 @@
 
     if (strategy !== "frames") {
       if (hasGifSourceFrames) {
-        return `원본 프레임 ${metadata.frameCount}개 · 이 전략에서는 max_frames ${requestedMaxFrames}개를 비프레임 전략의 사용자 제한으로 적용합니다.`;
+        return `원본 프레임 ${metadata.frameCount}개 · 입력 상한 ${inputLimit}개. 이 전략에서는 max_frames ${requestedMaxFrames}개를 비프레임 전략의 사용자 제한으로 적용합니다.`;
       }
-      return `max_frames ${requestedMaxFrames}개는 비프레임 전략의 사용자 제한입니다. GIF 원본 프레임은 선택 후 표시됩니다.`;
+      return `max_frames ${requestedMaxFrames}개는 비프레임 전략의 사용자 제한입니다. GIF 원본 프레임은 선택 후 표시되며 입력 상한은 최대 ${inputLimit}개입니다.`;
     }
 
     if (hasGifSourceFrames) {
       const effectiveTarget = Math.min(metadata.frameCount, FRAME_PRIORITY_SCAN_LIMIT);
-      return `원본 프레임 ${metadata.frameCount}개 · 유효 목표 ${effectiveTarget}개. 프레임 우선은 입력값 ${requestedMaxFrames}개를 절대 캡으로 숨기지 않고 Slack 용량 내 원본 보존을 먼저 시도합니다.`;
+      return `원본 프레임 ${metadata.frameCount}개 · 유효 목표 ${effectiveTarget}개 · 입력 상한 ${inputLimit}개. 프레임 우선은 입력값 ${requestedMaxFrames}개를 절대 캡으로 숨기지 않고 Slack 용량 내 원본 보존을 먼저 시도합니다.`;
     }
 
     if (selectedFile && isLikelyGif(selectedFile)) {
       return `원본 프레임 확인 중 · 프레임 우선은 확인된 원본 프레임을 유효 목표로 표시하고 Slack 용량 내 보존을 먼저 시도합니다.`;
     }
 
-    return `GIF 선택 시 원본 프레임과 유효 목표를 표시합니다. max_frames ${requestedMaxFrames}개는 품질/균형 같은 비프레임 전략의 사용자 제한입니다.`;
+    return `GIF 선택 시 원본 프레임과 유효 목표를 표시합니다. max_frames ${requestedMaxFrames}개는 품질/균형 같은 비프레임 전략의 사용자 제한이며 입력 상한은 최대 ${inputLimit}개입니다.`;
   }
 
   function renderFrameTargetInsight() {
-    const requestedMaxFrames = readPositiveInteger(maxFramesInput, 50);
     const strategy = optimizationStrategy ? optimizationStrategy.value || "frames" : "frames";
-    const message = buildFrameTargetMessage(latestInspectMetadata, strategy, requestedMaxFrames);
+    const inputLimit = syncMaxFramesInputLimit(latestInspectMetadata, strategy);
+    const requestedMaxFrames = readPositiveInteger(maxFramesInput, Math.min(50, inputLimit));
+    const message = buildFrameTargetMessage(latestInspectMetadata, strategy, requestedMaxFrames, inputLimit);
     const sourceFrameCount = latestInspectMetadata && Number.isFinite(latestInspectMetadata.frameCount)
       ? latestInspectMetadata.frameCount
       : null;

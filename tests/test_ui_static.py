@@ -22,6 +22,8 @@ def test_index_exposes_dynamic_frame_target_status() -> None:
 
     assert response.status_code == 200
     assert 'id="frame-target-insight"' in response.text
+    assert 'id="max-frames"' in response.text
+    assert 'max="300"' in response.text
     assert "원본 프레임" in response.text
     assert "유효 목표" in response.text
     assert "비프레임 전략의 사용자 제한" in response.text
@@ -35,6 +37,8 @@ def test_static_js_updates_dynamic_source_and_effective_frame_copy() -> None:
     assert "buildFrameTargetMessage" in script
     assert "FRAME_PRIORITY_SCAN_LIMIT = 300" in script
     assert "Effective target" in script
+    assert "syncMaxFramesInputLimit" in script
+    assert "maxFramesInput.max = String(effectiveInputLimit)" in script
     assert "원본 프레임" in script
     assert "유효 목표" in script
     assert "source/effective" in script
@@ -57,6 +61,7 @@ def test_static_js_preserves_integer_max_frames_submission() -> None:
 
     assert "normalizeIntegerFormValue" in script
     assert 'formData.append("max_frames", normalizeIntegerFormValue(maxFramesInput, "50"))' in script
+    assert "FRAME_PRIORITY_SCAN_LIMIT" in script
 
 
 def test_static_js_displays_frame_cap_response_headers() -> None:

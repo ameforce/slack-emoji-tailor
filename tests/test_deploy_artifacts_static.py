@@ -10,6 +10,7 @@ IMPLEMENTATION_ARTIFACTS = [
     "docker-compose.dev.deploy.yml",
     "scripts/deploy/jenkins-enm-deploy.sh",
     "scripts/deploy/jenkins-enm-rollback.sh",
+    "scripts/deploy/public-gif-smoke.sh",
 ]
 
 LF_ONLY_ARTIFACTS = [
@@ -21,6 +22,7 @@ LF_ONLY_ARTIFACTS = [
     "pyproject.toml",
     "scripts/deploy/jenkins-enm-deploy.sh",
     "scripts/deploy/jenkins-enm-rollback.sh",
+    "scripts/deploy/public-gif-smoke.sh",
 ]
 
 
@@ -312,9 +314,10 @@ def test_same_server_public_smoke_has_fail_fast_http_and_gif_contract() -> None:
     _require_implementation_lanes_integrated()
     jenkinsfile = _read("Jenkinsfile")
     public_smoke = _stage_body(jenkinsfile, "Public URL/API Smoke")
+    smoke_script = _read("scripts/deploy/public-gif-smoke.sh")
 
     _assert_contains_all(
-        public_smoke,
+        smoke_script,
         [
             "#!/usr/bin/env bash",
             "set -Eeuo pipefail",
@@ -336,16 +339,51 @@ def test_same_server_public_smoke_has_fail_fast_http_and_gif_contract() -> None:
         ],
         label="same-server public smoke GIF/API contract",
     )
-    assert public_smoke.count("--write-out") >= 4, (
+    assert "SMOKE_SCOPE=same-server" in public_smoke
+    assert "EXTERNAL_PROOF=false" in public_smoke
+    assert "bash scripts/deploy/public-gif-smoke.sh" in public_smoke
+    assert smoke_script.count("--write-out") >= 4, (
         "health, inspect, normal convert, and tight convert curls must each "
         "persist HTTP status evidence before assertions"
     )
-    assert "--fail" not in public_smoke, (
+    assert "--fail" not in smoke_script, (
         "HTTP status must be captured and asserted explicitly; curl --fail can "
         "drop response/status evidence before archival"
     )
-    assert "| tee deploy-evidence/public-health-response" not in public_smoke, (
+    assert "| tee deploy-evidence/public-health-response" not in smoke_script, (
         "public curls must not rely on tee output alone as success evidence"
+    )
+
+
+def test_external_public_smoke_script_provides_true_external_proof_mode() -> None:
+    _require_implementation_lanes_integrated()
+    smoke_script = _read("scripts/deploy/public-gif-smoke.sh")
+    deploy_doc = _read("docs/deploy/jenkins-dev.md").lower()
+    checklist = _read("docs/deploy/jenkins-dev-security-checklist.md").lower()
+    combined_docs = f"{deploy_doc}\n{checklist}"
+
+    _assert_contains_all(
+        smoke_script,
+        [
+            'SMOKE_SCOPE="${SMOKE_SCOPE:-external}"',
+            'EXTERNAL_PROOF="${EXTERNAL_PROOF:-true}"',
+            "public-smoke-scope.txt",
+            "scope=${SMOKE_SCOPE}",
+            "external-proof=${EXTERNAL_PROOF}",
+            "BASE_URL",
+            "PUBLIC_HEALTHCHECK_URL",
+        ],
+        label="external public smoke script defaults",
+    )
+    _assert_contains_all(
+        combined_docs,
+        [
+            "scripts/deploy/public-gif-smoke.sh",
+            "smoke_scope=external",
+            "external_proof=true",
+            "true external proof",
+        ],
+        label="external public smoke documentation",
     )
 
 

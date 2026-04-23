@@ -25,8 +25,9 @@ Use this checklist before enabling or re-running the Jenkins branch-routed deplo
 - [ ] The immediate single-server gate runs same-server public URL/API smoke from the already allocated Jenkins build/deploy agent; it must not queue for an unavailable `external-http-check` label after mutation.
 - [ ] The smoke archives `public-smoke-scope.txt` with `scope=same-server` and `external-proof=false`, and operators understand this is not true external proof.
 - [ ] The smoke curls `PUBLIC_HEALTHCHECK_URL`, `/api/inspect`, and `/api/convert` directly through the public HTTPS origin with TLS verification enabled; it is not an SSH/on-host curl.
+- [ ] Dev signoff true external proof runs `SMOKE_SCOPE=external EXTERNAL_PROOF=true BASE_URL=https://dev.emoji.enmsoftware.com scripts/deploy/public-gif-smoke.sh` from a repo checkout outside `enm-server`, then records `smoke_scope=external`, `external_proof=true`, and `true external proof` in the deployment evidence.
 - [ ] A failed same-server public URL/API smoke fails the deployment. When a previous image exists, it must trigger rollback even if local health passed.
-- [ ] Optional future true-external proof has a real external runner/probe, owner, credentials, and a pre-mutation fail-fast path before it becomes required for deployment.
+- [ ] Optional future true-external proof as a Jenkins-blocking gate has a real external runner/probe, owner, credentials, and a pre-mutation fail-fast path before it becomes required for deployment; do not create a second same-server Jenkins agent solely to satisfy this checkbox.
 
 ## Secret redaction and artifact hygiene
 
