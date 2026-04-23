@@ -10,7 +10,6 @@ pipeline {
 
   parameters {
     string(name: 'BUILD_AGENT_LABEL', defaultValue: 'docker-build', description: 'Jenkins agent label with python3, preinstalled uv, Docker CLI/daemon, and docker buildx. The ENM controller is not sufficient.')
-    string(name: 'PUBLIC_CHECK_AGENT_LABEL', defaultValue: 'external-http-check', description: 'Jenkins agent/probe outside enm-server used for public URL health checks.')
     booleanParam(name: 'RUN_DEPLOY', defaultValue: false, description: 'When true, deploy the pushed immutable image through Jenkins SSH after build/test/push succeeds.')
     booleanParam(name: 'DEPLOY_DRY_RUN', defaultValue: true, description: 'When true with RUN_DEPLOY, archive the deploy preview but do not mutate enm-server.')
 
@@ -34,8 +33,7 @@ pipeline {
     string(name: 'DEPLOY_ALLOWED_BRANCHES', defaultValue: '', description: 'Emergency narrowing only. Empty allows any branch after branch identity is resolved; branch identity still fixes prod/dev targets.')
     string(name: 'DEPLOY_HEALTHCHECK_TIMEOUT_SECONDS', defaultValue: '120', description: 'Maximum local health wait budget for the deploy script.')
     string(name: 'DEPLOY_HEALTHCHECK_INTERVAL_SECONDS', defaultValue: '5', description: 'Local health retry interval for the deploy script.')
-    string(name: 'PUBLIC_HEALTHCHECK_TIMEOUT_SECONDS', defaultValue: '15', description: 'curl --max-time budget for the public health check.')
-    string(name: 'PUBLIC_CHECK_FORBIDDEN_HOST_PATTERNS', defaultValue: 'enm-server|jenkins-controller|^jenkins$', description: 'Extended grep pattern that identifies hosts forbidden for external public checks.')
+    string(name: 'PUBLIC_HEALTHCHECK_TIMEOUT_SECONDS', defaultValue: '15', description: 'curl --max-time budget for same-server public URL/API smoke health checks.')
   }
 
   environment {
@@ -113,7 +111,7 @@ PY
           env.IMAGE_TAG = "${env.DEPLOY_ENVIRONMENT}-${env.GIT_COMMIT_SHORT}-${env.BUILD_NUMBER}"
           env.IMAGE_REF = "${env.IMAGE_REPOSITORY}:${env.IMAGE_TAG}"
           env.MOVING_ALIAS_REF = "${env.IMAGE_REPOSITORY}:${env.DEPLOY_ENVIRONMENT}-latest"
-          env.PUBLIC_HEALTH_FAILED = 'false'
+          env.POST_DEPLOY_SMOKE_FAILED = 'false'
 
           if (env.IMAGE_REF ==~ /.*:(latest|dev-latest|prod-latest)$/) {
             error('Deploy IMAGE_REF must be immutable and must not be a moving latest alias.')
@@ -214,7 +212,6 @@ docker logout "$REGISTRY_URL" >/dev/null 2>&1 || true
           requireParam('DEPLOY_APP_PORT', env.EFFECTIVE_DEPLOY_APP_PORT)
           requireParam('DEPLOY_COMPOSE_PROJECT', env.EFFECTIVE_DEPLOY_COMPOSE_PROJECT)
           requireParam('PUBLIC_HEALTHCHECK_URL', env.PUBLIC_HEALTHCHECK_URL_RESOLVED)
-          requireParam('PUBLIC_CHECK_AGENT_LABEL', params.PUBLIC_CHECK_AGENT_LABEL)
 
           if (!(env.EFFECTIVE_DEPLOY_APP_PORT ==~ /^[0-9]+$/)) {
             error('DEPLOY_APP_PORT must be numeric.')
@@ -254,7 +251,8 @@ compose_project=${EFFECTIVE_DEPLOY_COMPOSE_PROJECT}
 app_host_port=${EFFECTIVE_DEPLOY_APP_PORT}
 local_health_url=${LOCAL_HEALTHCHECK_URL_RESOLVED}
 public_health_url=${PUBLIC_HEALTHCHECK_URL_RESOLVED}
-public_check_agent_label=${PUBLIC_CHECK_AGENT_LABEL}
+public_smoke_scope=same-server
+public_smoke_external_proof=false
 PREVIEW
 cp deploy-preview.txt deploy-evidence/deploy-preview.txt
 cat deploy-preview.txt
@@ -299,7 +297,8 @@ cat deploy-preview.txt
             ]) {
               sh '''#!/usr/bin/env bash
 set -euo pipefail
-bash "$DEPLOY_SCRIPT"
+mkdir -p deploy-evidence
+bash "$DEPLOY_SCRIPT" 2>&1 | tee deploy-evidence/deploy-script.log
 '''
             }
           }
@@ -328,10 +327,8 @@ fi
       }
     }
 
-    stage('External Public Health') {
-      agent { label "${params.PUBLIC_CHECK_AGENT_LABEL}" }
+    stage('Same-Server Public URL/API Smoke') {
       when {
-        beforeAgent true
         allOf {
           expression { return params.RUN_DEPLOY }
           expression { return !params.DEPLOY_DRY_RUN }
@@ -340,30 +337,172 @@ fi
       environment {
         PUBLIC_HEALTHCHECK_URL = "${env.PUBLIC_HEALTHCHECK_URL_RESOLVED}"
         PUBLIC_HEALTHCHECK_TIMEOUT_SECONDS = "${params.PUBLIC_HEALTHCHECK_TIMEOUT_SECONDS}"
-        PUBLIC_CHECK_FORBIDDEN_HOST_PATTERNS = "${params.PUBLIC_CHECK_FORBIDDEN_HOST_PATTERNS}"
       }
       steps {
         script {
           try {
             sh '''#!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 mkdir -p deploy-evidence
-{
-  echo "hostname=$(hostname)"
-  echo "fqdn=$(hostname -f 2>/dev/null || true)"
-  hostnamectl 2>/dev/null || true
-} | tee deploy-evidence/public-check-host-proof.txt
+: "${PUBLIC_HEALTHCHECK_URL:?PUBLIC_HEALTHCHECK_URL is required}"
+: "${PUBLIC_HEALTHCHECK_TIMEOUT_SECONDS:=15}"
 
-if [ -n "${PUBLIC_CHECK_FORBIDDEN_HOST_PATTERNS:-}" ] && grep -Eiq "$PUBLIC_CHECK_FORBIDDEN_HOST_PATTERNS" deploy-evidence/public-check-host-proof.txt; then
-  echo "Public health check appears to be running on a forbidden host/controller pattern: ${PUBLIC_CHECK_FORBIDDEN_HOST_PATTERNS}" | tee deploy-evidence/public-health-failure.txt
-  exit 31
+printf 'scope=same-server\nexternal-proof=false\n' > deploy-evidence/public-smoke-scope.txt
+echo "Same-server public URL/API smoke: route=${PUBLIC_HEALTHCHECK_URL} external-proof=false" | tee deploy-evidence/public-smoke-summary.txt
+
+BASE_URL="${PUBLIC_HEALTHCHECK_URL%/healthz}"
+if [ "$BASE_URL" = "$PUBLIC_HEALTHCHECK_URL" ]; then
+  BASE_URL="${PUBLIC_HEALTHCHECK_URL%/}"
 fi
+GIF_FIXTURE="deploy-evidence/frame-priority-smoke.gif"
+EXPECTED_SOURCE_FRAMES=159
+PATH="$PWD/.jenkins-uv/bin:$PATH"
+GIF_FRAME_PRIORITY_SCAN_LIMIT="$(uv run python - <<'PY'
+from app.services.converter_core import GIF_FRAME_PRIORITY_SCAN_LIMIT
+print(GIF_FRAME_PRIORITY_SCAN_LIMIT)
+PY
+)"
+EXPECTED_EFFECTIVE_FRAMES="$EXPECTED_SOURCE_FRAMES"
+if [ "$EXPECTED_SOURCE_FRAMES" -gt "$GIF_FRAME_PRIORITY_SCAN_LIMIT" ]; then
+  EXPECTED_EFFECTIVE_FRAMES="$GIF_FRAME_PRIORITY_SCAN_LIMIT"
+fi
+export EXPECTED_SOURCE_FRAMES GIF_FRAME_PRIORITY_SCAN_LIMIT EXPECTED_EFFECTIVE_FRAMES
 
-curl --fail --show-error --silent --location --max-time "$PUBLIC_HEALTHCHECK_TIMEOUT_SECONDS" "$PUBLIC_HEALTHCHECK_URL" | tee deploy-evidence/public-health-response.txt
+uv run python - <<'PY'
+from pathlib import Path
+from PIL import Image, ImageDraw
+
+frame_count = 159
+frames = []
+for index in range(frame_count):
+    image = Image.new(
+        "RGBA",
+        (64, 64),
+        ((index * 3) % 256, (index * 5) % 256, (index * 7) % 256, 255),
+    )
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((index % 32, index % 32, 63, 63), outline=(255, 255, 255, 255))
+    draw.text((4, 4), str(index % 100), fill=(255, 255, 255, 255))
+    frames.append(image.convert("P", palette=Image.ADAPTIVE, colors=64))
+
+Path("deploy-evidence").mkdir(exist_ok=True)
+frames[0].save(
+    "deploy-evidence/frame-priority-smoke.gif",
+    save_all=True,
+    append_images=frames[1:],
+    duration=20,
+    loop=0,
+    disposal=2,
+    optimize=False,
+)
+PY
+
+cat > deploy-evidence/public-frame-priority-expected.txt <<EOF
+expected_source_frames=${EXPECTED_SOURCE_FRAMES}
+gif_frame_priority_scan_limit=${GIF_FRAME_PRIORITY_SCAN_LIMIT}
+expected_effective_frames=${EXPECTED_EFFECTIVE_FRAMES}
+EOF
+
+run_curl_capture_status() {
+  local status_file="$1"
+  shift
+  local status exit_code
+  set +e
+  status="$(curl "$@" 2>> deploy-evidence/deploy-script.log)"
+  exit_code=$?
+  set -e
+  printf '%s\n' "${status:-000}" > "$status_file"
+  if [ "$exit_code" -ne 0 ]; then
+    echo "curl failed exit_code=${exit_code} status=${status:-000} status_file=${status_file}" >> deploy-evidence/deploy-script.log
+    return "$exit_code"
+  fi
+  printf '%s' "$status"
+}
+
+health_status="$(run_curl_capture_status deploy-evidence/public-health-status.txt \
+  --show-error --silent --location --max-time "$PUBLIC_HEALTHCHECK_TIMEOUT_SECONDS" \
+  --output deploy-evidence/public-health-response.txt \
+  --write-out '%{http_code}' \
+  "$PUBLIC_HEALTHCHECK_URL")"
+test "$health_status" = "200"
+
+inspect_status="$(run_curl_capture_status deploy-evidence/public-inspect-status.txt \
+  --show-error --silent --location --max-time 30 \
+  --output deploy-evidence/public-inspect-response.json \
+  --write-out '%{http_code}' \
+  -F "file=@${GIF_FIXTURE};type=image/gif" \
+  "$BASE_URL/api/inspect")"
+test "$inspect_status" = "200"
+
+uv run python - <<'PY' > deploy-evidence/public-inspect-summary.json
+import json
+import os
+from pathlib import Path
+
+payload = json.loads(Path("deploy-evidence/public-inspect-response.json").read_text())
+expected = int(os.environ["EXPECTED_SOURCE_FRAMES"])
+summary = {
+    "http_status": Path("deploy-evidence/public-inspect-status.txt").read_text().strip(),
+    "format_name": payload.get("format_name"),
+    "frame_count": payload.get("frame_count"),
+    "is_animated": payload.get("is_animated"),
+    "expected_source_frames": expected,
+}
+print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+if payload.get("frame_count") != expected or payload.get("is_animated") is not True:
+    raise SystemExit(f"Unexpected inspect metadata: {summary}")
+PY
+
+frames_status="$(run_curl_capture_status deploy-evidence/public-convert-frames-status.txt \
+  --show-error --silent --location --max-time 60 \
+  --dump-header deploy-evidence/public-convert-frames-headers.txt \
+  --output deploy-evidence/public-convert-frames.gif \
+  --write-out '%{http_code}' \
+  -F "file=@${GIF_FIXTURE};type=image/gif" \
+  -F "max_kb=128" \
+  -F "size=auto" \
+  -F "fit=cover" \
+  -F "max_frames=50" \
+  -F "optimization_strategy=frames" \
+  "$BASE_URL/api/convert")"
+test "$frames_status" = "200"
+grep -Eiq '^X-Optimization-Strategy:[[:space:]]*frames([[:space:]]|$)' deploy-evidence/public-convert-frames-headers.txt
+grep -Eiq '^X-Effective-Max-Frames:[[:space:]]*'"$EXPECTED_EFFECTIVE_FRAMES"'([[:space:]]|$)' deploy-evidence/public-convert-frames-headers.txt
+grep -Eiq '^X-Frame-Cap-Mode:[[:space:]]*' deploy-evidence/public-convert-frames-headers.txt
+grep -Eiq '^X-Frame-Reduction-Reason:[[:space:]]*' deploy-evidence/public-convert-frames-headers.txt
+frames_bytes="$(wc -c < deploy-evidence/public-convert-frames.gif | tr -d ' ')"
+printf 'http_status=%s\nresult_bytes=%s\nmax_bytes=%s\nexpected_effective_frames=%s\n' \
+  "$frames_status" "$frames_bytes" "$((128 * 1024))" "$EXPECTED_EFFECTIVE_FRAMES" \
+  > deploy-evidence/public-convert-frames-summary.txt
+test "$frames_bytes" -le $((128 * 1024))
+
+tight_status="$(run_curl_capture_status deploy-evidence/public-convert-tight-status.txt \
+  --show-error --silent --location --max-time 60 \
+  --dump-header deploy-evidence/public-convert-tight-headers.txt \
+  --output deploy-evidence/public-convert-tight.gif \
+  --write-out '%{http_code}' \
+  -F "file=@${GIF_FIXTURE};type=image/gif" \
+  -F "max_kb=1" \
+  -F "size=auto" \
+  -F "fit=cover" \
+  -F "max_frames=50" \
+  -F "optimization_strategy=frames" \
+  "$BASE_URL/api/convert")"
+test "$tight_status" = "200"
+grep -Eiq '^X-Frame-Cap-Mode:[[:space:]]*' deploy-evidence/public-convert-tight-headers.txt
+grep -Eiq '^X-Frame-Reduction-Reason:[[:space:]]*budget-limit([[:space:]]|$)' deploy-evidence/public-convert-tight-headers.txt
+grep -Eiq '^X-Gif-Search-Exhausted:[[:space:]]*true([[:space:]]|$)' deploy-evidence/public-convert-tight-headers.txt
+grep -Eiq '^X-Target-Reached:[[:space:]]*false([[:space:]]|$)' deploy-evidence/public-convert-tight-headers.txt
+tight_bytes="$(wc -c < deploy-evidence/public-convert-tight.gif | tr -d ' ')"
+printf 'http_status=%s\nresult_bytes=%s\nmax_bytes=%s\nexpected_effective_frames=%s\n' \
+  "$tight_status" "$tight_bytes" "$((1 * 1024))" "$EXPECTED_EFFECTIVE_FRAMES" \
+  > deploy-evidence/public-convert-tight-summary.txt
+
+echo "Same-server public URL/API smoke passed for ${BASE_URL}."
 '''
           } catch (err) {
-            env.PUBLIC_HEALTH_FAILED = 'true'
-            echo "External public health failed; rollback stage will run on the build agent. ${err}"
+            env.POST_DEPLOY_SMOKE_FAILED = 'true'
+            echo "Post-deploy public smoke failed; rollback stage will run on the build agent. ${err}"
           } finally {
             archiveArtifacts artifacts: 'deploy-evidence/**', allowEmptyArchive: true, fingerprint: true
           }
@@ -371,12 +510,12 @@ curl --fail --show-error --silent --location --max-time "$PUBLIC_HEALTHCHECK_TIM
       }
     }
 
-    stage('Auto Rollback After Public Health Failure') {
+    stage('Auto Rollback After Post-Deploy Smoke Failure') {
       when {
         allOf {
           expression { return params.RUN_DEPLOY }
           expression { return !params.DEPLOY_DRY_RUN }
-          expression { return env.PUBLIC_HEALTH_FAILED == 'true' }
+          expression { return env.POST_DEPLOY_SMOKE_FAILED == 'true' }
         }
       }
       steps {
@@ -406,7 +545,7 @@ curl --fail --show-error --silent --location --max-time "$PUBLIC_HEALTHCHECK_TIM
               sh '''#!/usr/bin/env bash
 set -euo pipefail
 mkdir -p deploy-evidence
-bash "$ROLLBACK_SCRIPT" | tee deploy-evidence/rollback-after-public-health.txt
+bash "$ROLLBACK_SCRIPT" 2>&1 | tee deploy-evidence/rollback-after-post-deploy-smoke.txt
 '''
             }
           }
@@ -419,16 +558,16 @@ bash "$ROLLBACK_SCRIPT" | tee deploy-evidence/rollback-after-public-health.txt
       }
     }
 
-    stage('Fail Deployment After Public Health Rollback') {
+    stage('Fail Deployment After Post-Deploy Smoke Rollback') {
       when {
         allOf {
           expression { return params.RUN_DEPLOY }
           expression { return !params.DEPLOY_DRY_RUN }
-          expression { return env.PUBLIC_HEALTH_FAILED == 'true' }
+          expression { return env.POST_DEPLOY_SMOKE_FAILED == 'true' }
         }
       }
       steps {
-        error('External public health failed. Jenkins attempted rollback; failing the original deployment build by design.')
+        error('Post-deploy public smoke failed. Jenkins attempted rollback; failing the original deployment build by design.')
       }
     }
 
@@ -441,7 +580,7 @@ bash "$ROLLBACK_SCRIPT" | tee deploy-evidence/rollback-after-public-health.txt
 
   post {
     always {
-      echo 'Jenkins deployment pipeline finished. See archived image/deploy/health/rollback evidence for proof.'
+      echo 'Jenkins deployment pipeline finished. See archived image/deploy/local-health/same-server-public-smoke/rollback evidence for proof.'
     }
   }
 }
