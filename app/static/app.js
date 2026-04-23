@@ -1,6 +1,7 @@
 "use strict";
 
 (function setupEmojiTailor() {
+  const DEFAULT_MAX_FRAMES_LIMIT = 50;
   const FRAME_PRIORITY_SCAN_LIMIT = 300;
   const form = document.getElementById("convert-form");
   const fileInput = document.getElementById("file-input");
@@ -24,6 +25,7 @@
   let downloadName = "emoji_slack.png";
   let selectedFile = null;
   let latestInspectMetadata = null;
+  let userEditedMaxFrames = false;
   let inspectRequestId = 0;
   let inspectAbortController = null;
 
@@ -87,7 +89,10 @@
   }
 
   function normalizeIntegerFormValue(inputElement, fallbackValue) {
-    const normalizedValue = readPositiveInteger(inputElement, Number.parseInt(fallbackValue, 10) || 50);
+    const normalizedValue = readPositiveInteger(
+      inputElement,
+      Number.parseInt(fallbackValue, 10) || DEFAULT_MAX_FRAMES_LIMIT,
+    );
     const maxValue = inputElement
       ? Number.parseInt(inputElement.max || "", 10)
       : Number.NaN;
@@ -189,6 +194,7 @@
 
   function clearInspectMetadata() {
     latestInspectMetadata = null;
+    userEditedMaxFrames = false;
     setSourceInsight("", "");
     renderFrameTargetInsight();
   }
@@ -199,19 +205,27 @@
       && Number.isFinite(metadata.frameCount)
       && metadata.frameCount > 0;
     if (hasGifSourceFrames) {
-      return Math.max(1, Math.min(metadata.frameCount, FRAME_PRIORITY_SCAN_LIMIT));
+      if (metadata.frameCount > DEFAULT_MAX_FRAMES_LIMIT) {
+        return Math.max(1, Math.min(metadata.frameCount, FRAME_PRIORITY_SCAN_LIMIT));
+      }
+      return DEFAULT_MAX_FRAMES_LIMIT;
     }
-    return FRAME_PRIORITY_SCAN_LIMIT;
+    return DEFAULT_MAX_FRAMES_LIMIT;
   }
 
   function syncMaxFramesInputLimit(metadata, strategy) {
     if (!maxFramesInput) {
-      return FRAME_PRIORITY_SCAN_LIMIT;
+      return DEFAULT_MAX_FRAMES_LIMIT;
     }
     const effectiveInputLimit = resolveMaxFramesInputLimit(metadata, strategy);
     maxFramesInput.max = String(effectiveInputLimit);
-    const requestedValue = readPositiveInteger(maxFramesInput, Math.min(50, effectiveInputLimit));
-    if (requestedValue > effectiveInputLimit) {
+    const requestedValue = readPositiveInteger(
+      maxFramesInput,
+      Math.min(DEFAULT_MAX_FRAMES_LIMIT, effectiveInputLimit),
+    );
+    if (effectiveInputLimit > DEFAULT_MAX_FRAMES_LIMIT && !userEditedMaxFrames) {
+      maxFramesInput.value = String(effectiveInputLimit);
+    } else if (requestedValue > effectiveInputLimit) {
       maxFramesInput.value = String(effectiveInputLimit);
     }
     return effectiveInputLimit;
@@ -227,7 +241,7 @@
       if (hasGifSourceFrames) {
         return `원본 프레임 ${metadata.frameCount}개 · 입력 상한 ${inputLimit}개. 이 전략에서는 max_frames ${requestedMaxFrames}개를 비프레임 전략의 사용자 제한으로 적용합니다.`;
       }
-      return `max_frames ${requestedMaxFrames}개는 비프레임 전략의 사용자 제한입니다. GIF 원본 프레임은 선택 후 표시되며 입력 상한은 최대 ${inputLimit}개입니다.`;
+      return `max_frames ${requestedMaxFrames}개는 비프레임 전략의 사용자 제한입니다. 사진 선택 전 기본 상한은 ${DEFAULT_MAX_FRAMES_LIMIT}개이며 GIF 원본 프레임은 선택 후 표시됩니다.`;
     }
 
     if (hasGifSourceFrames) {
@@ -239,7 +253,7 @@
       return `원본 프레임 확인 중 · 프레임 우선은 확인된 원본 프레임을 유효 목표로 표시하고 Slack 용량 내 보존을 먼저 시도합니다.`;
     }
 
-    return `GIF 선택 시 원본 프레임과 유효 목표를 표시합니다. max_frames ${requestedMaxFrames}개는 품질/균형 같은 비프레임 전략의 사용자 제한이며 입력 상한은 최대 ${inputLimit}개입니다.`;
+    return `GIF 선택 시 원본 프레임과 유효 목표를 표시합니다. 사진 선택 전 기본 상한은 ${DEFAULT_MAX_FRAMES_LIMIT}개이고, 50프레임 초과 GIF는 원본/안전 상한으로 자동 조정됩니다.`;
   }
 
   function renderFrameTargetInsight() {
@@ -592,7 +606,10 @@
     optimizationStrategy.addEventListener("change", renderFrameTargetInsight);
   }
   if (maxFramesInput) {
-    maxFramesInput.addEventListener("input", renderFrameTargetInsight);
+    maxFramesInput.addEventListener("input", () => {
+      userEditedMaxFrames = true;
+      renderFrameTargetInsight();
+    });
   }
   renderFrameTargetInsight();
 

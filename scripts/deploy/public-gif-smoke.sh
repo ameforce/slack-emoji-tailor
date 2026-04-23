@@ -123,7 +123,7 @@ index_status="$(run_curl_capture_status "$SMOKE_EVIDENCE_DIR/public-index-status
   "$BASE_URL/")"
 test "$index_status" = "200"
 grep -q 'id="max-frames"' "$SMOKE_EVIDENCE_DIR/public-index-response.html"
-grep -q 'max="300"' "$SMOKE_EVIDENCE_DIR/public-index-response.html"
+grep -q 'max="50"' "$SMOKE_EVIDENCE_DIR/public-index-response.html"
 
 inspect_status="$(run_curl_capture_status "$SMOKE_EVIDENCE_DIR/public-inspect-status.txt" \
   --show-error --silent --location --max-time 30 \
