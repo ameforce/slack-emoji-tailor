@@ -60,6 +60,9 @@ def test_convert_uploaded_gif_passes_optimization_strategy(
             effective_max_frames=50,
             frame_cap_mode="user",
             frame_reduction_reason="none",
+            candidate_budget=240,
+            candidate_attempts=7,
+            gif_search_exhausted=False,
         )
 
     monkeypatch.setattr(converter_adapter, "convert_gif_frames", fake_convert_gif_frames)
@@ -77,6 +80,9 @@ def test_convert_uploaded_gif_passes_optimization_strategy(
     assert payload.frame_cap_metadata.effective_max_frames == 50
     assert payload.frame_cap_metadata.frame_cap_mode == "user"
     assert payload.frame_cap_metadata.frame_reduction_reason == "none"
+    assert payload.frame_cap_metadata.candidate_budget == 240
+    assert payload.frame_cap_metadata.candidate_attempts == 7
+    assert payload.frame_cap_metadata.gif_search_exhausted is False
 
 
 def test_convert_uploaded_static_uses_neutral_frame_cap_metadata(
@@ -105,3 +111,6 @@ def test_convert_uploaded_static_uses_neutral_frame_cap_metadata(
     assert payload.frame_cap_metadata.effective_max_frames == 1
     assert payload.frame_cap_metadata.frame_cap_mode == "none"
     assert payload.frame_cap_metadata.frame_reduction_reason == "none"
+    assert payload.frame_cap_metadata.candidate_budget == 0
+    assert payload.frame_cap_metadata.candidate_attempts == 0
+    assert payload.frame_cap_metadata.gif_search_exhausted is False

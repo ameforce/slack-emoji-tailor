@@ -23,6 +23,7 @@ from app.services.converter_adapter import (
     convert_uploaded_image,
     inspect_source_metadata,
 )
+from app.services.converter_core import USER_MAX_FRAMES_LIMIT
 from app.versioning import get_display_version
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -79,6 +80,7 @@ async def index(request: Request) -> HTMLResponse:
             "default_size": "auto",
             "default_fit": "stretch",
             "default_max_frames": 50,
+            "max_frames_limit": USER_MAX_FRAMES_LIMIT,
             "app_version": get_display_version(),
         },
     )
@@ -163,6 +165,9 @@ def _frame_cap_headers(converted: ConversionPayload, params: ConvertParams) -> d
         "X-Effective-Max-Frames": str(effective_max_frames),
         "X-Frame-Cap-Mode": frame_cap_mode,
         "X-Frame-Reduction-Reason": frame_reduction_reason,
+        "X-Gif-Candidate-Budget": str(frame_cap_metadata.candidate_budget),
+        "X-Gif-Candidate-Attempts": str(frame_cap_metadata.candidate_attempts),
+        "X-Gif-Search-Exhausted": str(frame_cap_metadata.gif_search_exhausted).lower(),
     }
 
 

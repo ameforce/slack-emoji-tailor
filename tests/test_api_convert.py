@@ -10,6 +10,7 @@ import app.services.converter_adapter as converter_adapter
 from app.main import app
 from app.schemas import ConvertMetadata, ConvertParams, SourceMetadata
 from app.services.converter_adapter import FrameCapMetadata
+from app.services.converter_core import USER_MAX_FRAMES_LIMIT
 
 client = TestClient(app)
 
@@ -99,6 +100,86 @@ def test_convert_passes_optimization_strategy_form_value(
     assert response.headers["x-optimization-strategy"] == "quality"
 
 
+def test_convert_accepts_gif_frame_limit_above_legacy_fifty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, ConvertParams] = {}
+
+    def fake_convert_uploaded_image(
+        file_bytes: bytes,
+        original_filename: str | None,
+        params: ConvertParams,
+    ) -> converter_adapter.ConversionPayload:
+        captured["params"] = params
+        return converter_adapter.ConversionPayload(
+            data=b"converted",
+            media_type="image/gif",
+            filename="emoji_slack.gif",
+            source_metadata=SourceMetadata(
+                format_name="GIF",
+                width=32,
+                height=32,
+                frame_count=159,
+                byte_size=len(file_bytes),
+                is_animated=True,
+            ),
+            metadata=ConvertMetadata(
+                format_name="GIF",
+                side=128,
+                colors=64,
+                frame_step=1,
+                frame_count=159,
+                quality=0,
+                byte_size=len(b"converted"),
+                target_reached=True,
+            ),
+            frame_cap_metadata=FrameCapMetadata(
+                requested_max_frames=159,
+                effective_max_frames=159,
+                frame_cap_mode="strategy",
+                frame_reduction_reason="none",
+                candidate_budget=240,
+                candidate_attempts=1,
+                gif_search_exhausted=False,
+            ),
+        )
+
+    monkeypatch.setattr(main_module, "convert_uploaded_image", fake_convert_uploaded_image)
+
+    response = client.post(
+        "/api/convert",
+        files={"file": ("animated.gif", _make_png_bytes(), "image/gif")},
+        data={
+            "max_kb": "128",
+            "size": "auto",
+            "fit": "cover",
+            "max_frames": "159",
+            "optimization_strategy": "frames",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["params"].max_frames == 159
+    assert response.headers["x-requested-max-frames"] == "159"
+    assert response.headers["x-effective-max-frames"] == "159"
+
+
+def test_convert_rejects_frame_limit_above_safety_limit() -> None:
+    response = client.post(
+        "/api/convert",
+        files={"file": ("avatar.png", _make_png_bytes(), "image/png")},
+        data={
+            "max_kb": "128",
+            "size": "auto",
+            "fit": "cover",
+            "max_frames": str(USER_MAX_FRAMES_LIMIT + 1),
+            "optimization_strategy": "frames",
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_convert_reports_frame_cap_headers_for_animated_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -134,6 +215,9 @@ def test_convert_reports_frame_cap_headers_for_animated_result(
                 effective_max_frames=159,
                 frame_cap_mode="strategy",
                 frame_reduction_reason="none",
+                candidate_budget=240,
+                candidate_attempts=11,
+                gif_search_exhausted=False,
             ),
         )
 
@@ -161,6 +245,9 @@ def test_convert_reports_frame_cap_headers_for_animated_result(
     assert response.headers["x-effective-max-frames"] == "159"
     assert response.headers["x-frame-cap-mode"] == "strategy"
     assert response.headers["x-frame-reduction-reason"] == "none"
+    assert response.headers["x-gif-candidate-budget"] == "240"
+    assert response.headers["x-gif-candidate-attempts"] == "11"
+    assert response.headers["x-gif-search-exhausted"] == "false"
 
 
 @pytest.mark.parametrize("strategy", ["quality", "balanced"])
@@ -201,6 +288,9 @@ def test_convert_reports_user_frame_cap_for_non_frame_strategies(
                 effective_max_frames=50,
                 frame_cap_mode="user",
                 frame_reduction_reason="user-cap",
+                candidate_budget=240,
+                candidate_attempts=5,
+                gif_search_exhausted=False,
             ),
         )
 
@@ -224,6 +314,9 @@ def test_convert_reports_user_frame_cap_for_non_frame_strategies(
     assert response.headers["x-effective-max-frames"] == "50"
     assert response.headers["x-frame-cap-mode"] == "user"
     assert response.headers["x-frame-reduction-reason"] == "user-cap"
+    assert response.headers["x-gif-candidate-budget"] == "240"
+    assert response.headers["x-gif-candidate-attempts"] == "5"
+    assert response.headers["x-gif-search-exhausted"] == "false"
 
 
 def test_convert_rejects_invalid_optimization_strategy() -> None:

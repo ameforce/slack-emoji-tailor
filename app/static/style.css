@@ -134,6 +134,7 @@ h1 {
 .field {
   display: grid;
   gap: 0.35rem;
+  min-width: 0;
 }
 
 .field span {
@@ -150,6 +151,9 @@ h1 {
 input,
 select,
 button {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   border: 1px solid #d6dcf7;
   border-radius: 14px;
   font-size: 0.98rem;
@@ -168,6 +172,10 @@ button:focus {
   display: flex;
   flex-wrap: wrap;
   gap: 0.65rem;
+}
+
+.actions button {
+  width: auto;
 }
 
 #submit-btn {

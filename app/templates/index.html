@@ -54,10 +54,13 @@
               name="max_frames"
               type="number"
               min="1"
-              max="50"
+              max="{{ default_max_frames }}"
               value="{{ default_max_frames }}"
             >
-            <small class="field-hint">프레임 우선에서는 Slack 용량 내 원본 프레임을 우선 탐색하고, 다른 전략에서는 이 값을 제한으로 사용합니다.</small>
+            <small class="field-hint">프레임 우선에서는 Slack 용량 내 원본 프레임을 우선 탐색합니다. 사진 선택 전에는 50개가 기본 상한이며, 50프레임 초과 GIF를 선택하면 원본/안전 상한(최대 {{ max_frames_limit }}개)으로 자동 조정됩니다.</small>
+            <small id="frame-target-insight" class="field-hint" hidden>
+              GIF 선택 시 원본 프레임과 유효 목표를 표시합니다. max_frames는 비프레임 전략의 사용자 제한으로 유지됩니다.
+            </small>
           </label>
 
           <label class="field">

@@ -5,6 +5,7 @@ from PIL import Image
 
 import app.services.converter_core as converter_core
 from app.services.converter_core import (
+    GIF_CANDIDATE_MAX_ATTEMPTS,
     GIF_FRAME_PRIORITY_SCAN_LIMIT,
     EncodeResult,
     build_step_candidates,
@@ -234,6 +235,111 @@ def test_frame_priority_candidate_generation_starts_with_full_frames(
     assert result.frame_reduction_reason == "none"
 
 
+def test_frame_priority_candidate_search_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_frames = [
+        Image.new("RGBA", (96, 96), (index % 256, index // 2, 255 - (index % 256), 255))
+        for index in range(159)
+    ]
+    source_durations = [80] * len(source_frames)
+    attempted: list[tuple[int, int, int]] = []
+
+    monkeypatch.setattr(converter_core, "build_side_candidates", lambda target_side: list(range(96, 16, -4)))
+
+    def fake_encode_gif(
+        source_frames,
+        source_durations,
+        side,
+        fit_mode,
+        frame_step,
+        colors,
+    ) -> EncodeResult:
+        attempted.append((side, frame_step, colors))
+        return EncodeResult(
+            data=b"x" * 200,
+            format_name="GIF",
+            side=side,
+            colors=colors,
+            frame_step=frame_step,
+            frame_count=len(source_frames[::frame_step]),
+        )
+
+    monkeypatch.setattr(converter_core, "encode_gif", fake_encode_gif)
+
+    result = convert_gif_frames(
+        source_frames=source_frames,
+        source_durations=source_durations,
+        fit_mode="contain",
+        target_side=96,
+        max_bytes=100,
+        max_frames=50,
+        optimization_strategy="frames",
+    )
+
+    full_cartesian_count = 20 * 12 * len(converter_core.GIF_COLOR_CANDIDATES)
+    assert len(attempted) == GIF_CANDIDATE_MAX_ATTEMPTS
+    assert len(attempted) < full_cartesian_count
+    assert result.candidate_budget == GIF_CANDIDATE_MAX_ATTEMPTS
+    assert result.candidate_attempts == GIF_CANDIDATE_MAX_ATTEMPTS
+    assert result.gif_search_exhausted is True
+    assert result.frame_reduction_reason == "budget-limit"
+
+
+def test_frame_priority_reduces_dimensions_and_colors_before_frame_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_frames = [
+        Image.new("RGBA", (96, 96), (index, 0, 255 - index, 255))
+        for index in range(12)
+    ]
+    source_durations = [80] * len(source_frames)
+    attempted: list[tuple[int, int, int]] = []
+
+    monkeypatch.setattr(converter_core, "build_side_candidates", lambda target_side: [96, 48])
+    monkeypatch.setattr(converter_core, "GIF_COLOR_CANDIDATES", (128, 64))
+
+    def fake_encode_gif(
+        source_frames,
+        source_durations,
+        side,
+        fit_mode,
+        frame_step,
+        colors,
+    ) -> EncodeResult:
+        attempted.append((side, frame_step, colors))
+        byte_size = 80 if frame_step == 2 else 120
+        return EncodeResult(
+            data=b"x" * byte_size,
+            format_name="GIF",
+            side=side,
+            colors=colors,
+            frame_step=frame_step,
+            frame_count=len(source_frames[::frame_step]),
+        )
+
+    monkeypatch.setattr(converter_core, "encode_gif", fake_encode_gif)
+
+    result = convert_gif_frames(
+        source_frames=source_frames,
+        source_durations=source_durations,
+        fit_mode="contain",
+        target_side=96,
+        max_bytes=100,
+        max_frames=50,
+        optimization_strategy="frames",
+    )
+
+    assert attempted[:4] == [
+        (96, 1, 128),
+        (96, 1, 64),
+        (48, 1, 128),
+        (48, 1, 64),
+    ]
+    assert attempted[4][1] == 2
+    assert result.frame_step == 2
+
+
 def test_non_frame_strategy_candidate_generation_keeps_user_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -283,6 +389,8 @@ def test_non_frame_strategy_candidate_generation_keeps_user_cap(
     assert result.effective_max_frames == 50
     assert result.frame_cap_mode == "user"
     assert result.frame_reduction_reason == "user-cap"
+    assert result.candidate_attempts == 1
+    assert result.gif_search_exhausted is False
 
 
 def test_frame_priority_reduction_reason_reports_slack_size(

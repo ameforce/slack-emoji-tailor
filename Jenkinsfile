@@ -10,7 +10,6 @@ pipeline {
 
   parameters {
     string(name: 'BUILD_AGENT_LABEL', defaultValue: 'docker-build', description: 'Jenkins agent label with python3, preinstalled uv, Docker CLI/daemon, and docker buildx. The ENM controller is not sufficient.')
-    string(name: 'PUBLIC_CHECK_AGENT_LABEL', defaultValue: 'external-http-check', description: 'Jenkins agent/probe outside enm-server used for public URL health checks.')
     booleanParam(name: 'RUN_DEPLOY', defaultValue: false, description: 'When true, deploy the pushed immutable image through Jenkins SSH after build/test/push succeeds.')
     booleanParam(name: 'DEPLOY_DRY_RUN', defaultValue: true, description: 'When true with RUN_DEPLOY, archive the deploy preview but do not mutate enm-server.')
 
@@ -34,8 +33,7 @@ pipeline {
     string(name: 'DEPLOY_ALLOWED_BRANCHES', defaultValue: '', description: 'Emergency narrowing only. Empty allows any branch after branch identity is resolved; branch identity still fixes prod/dev targets.')
     string(name: 'DEPLOY_HEALTHCHECK_TIMEOUT_SECONDS', defaultValue: '120', description: 'Maximum local health wait budget for the deploy script.')
     string(name: 'DEPLOY_HEALTHCHECK_INTERVAL_SECONDS', defaultValue: '5', description: 'Local health retry interval for the deploy script.')
-    string(name: 'PUBLIC_HEALTHCHECK_TIMEOUT_SECONDS', defaultValue: '15', description: 'curl --max-time budget for the public health check.')
-    string(name: 'PUBLIC_CHECK_FORBIDDEN_HOST_PATTERNS', defaultValue: 'enm-server|jenkins-controller|^jenkins$', description: 'Extended grep pattern that identifies hosts forbidden for external public checks.')
+    string(name: 'PUBLIC_HEALTHCHECK_TIMEOUT_SECONDS', defaultValue: '15', description: 'curl --max-time budget for same-server public URL/API smoke health checks.')
   }
 
   environment {
@@ -49,6 +47,7 @@ pipeline {
   stages {
     stage('Checkout') {
       steps {
+        deleteDir()
         checkout scm
       }
     }
@@ -113,7 +112,7 @@ PY
           env.IMAGE_TAG = "${env.DEPLOY_ENVIRONMENT}-${env.GIT_COMMIT_SHORT}-${env.BUILD_NUMBER}"
           env.IMAGE_REF = "${env.IMAGE_REPOSITORY}:${env.IMAGE_TAG}"
           env.MOVING_ALIAS_REF = "${env.IMAGE_REPOSITORY}:${env.DEPLOY_ENVIRONMENT}-latest"
-          env.PUBLIC_HEALTH_FAILED = 'false'
+          env.POST_DEPLOY_SMOKE_FAILED = 'false'
 
           if (env.IMAGE_REF ==~ /.*:(latest|dev-latest|prod-latest)$/) {
             error('Deploy IMAGE_REF must be immutable and must not be a moving latest alias.')
@@ -214,7 +213,6 @@ docker logout "$REGISTRY_URL" >/dev/null 2>&1 || true
           requireParam('DEPLOY_APP_PORT', env.EFFECTIVE_DEPLOY_APP_PORT)
           requireParam('DEPLOY_COMPOSE_PROJECT', env.EFFECTIVE_DEPLOY_COMPOSE_PROJECT)
           requireParam('PUBLIC_HEALTHCHECK_URL', env.PUBLIC_HEALTHCHECK_URL_RESOLVED)
-          requireParam('PUBLIC_CHECK_AGENT_LABEL', params.PUBLIC_CHECK_AGENT_LABEL)
 
           if (!(env.EFFECTIVE_DEPLOY_APP_PORT ==~ /^[0-9]+$/)) {
             error('DEPLOY_APP_PORT must be numeric.')
@@ -254,7 +252,8 @@ compose_project=${EFFECTIVE_DEPLOY_COMPOSE_PROJECT}
 app_host_port=${EFFECTIVE_DEPLOY_APP_PORT}
 local_health_url=${LOCAL_HEALTHCHECK_URL_RESOLVED}
 public_health_url=${PUBLIC_HEALTHCHECK_URL_RESOLVED}
-public_check_agent_label=${PUBLIC_CHECK_AGENT_LABEL}
+public_smoke_scope=same-server
+public_smoke_external_proof=false
 PREVIEW
 cp deploy-preview.txt deploy-evidence/deploy-preview.txt
 cat deploy-preview.txt
@@ -299,7 +298,8 @@ cat deploy-preview.txt
             ]) {
               sh '''#!/usr/bin/env bash
 set -euo pipefail
-bash "$DEPLOY_SCRIPT"
+mkdir -p deploy-evidence
+bash "$DEPLOY_SCRIPT" 2>&1 | tee deploy-evidence/deploy-script.log
 '''
             }
           }
@@ -328,10 +328,8 @@ fi
       }
     }
 
-    stage('External Public Health') {
-      agent { label "${params.PUBLIC_CHECK_AGENT_LABEL}" }
+    stage('Same-Server Public URL/API Smoke') {
       when {
-        beforeAgent true
         allOf {
           expression { return params.RUN_DEPLOY }
           expression { return !params.DEPLOY_DRY_RUN }
@@ -340,30 +338,25 @@ fi
       environment {
         PUBLIC_HEALTHCHECK_URL = "${env.PUBLIC_HEALTHCHECK_URL_RESOLVED}"
         PUBLIC_HEALTHCHECK_TIMEOUT_SECONDS = "${params.PUBLIC_HEALTHCHECK_TIMEOUT_SECONDS}"
-        PUBLIC_CHECK_FORBIDDEN_HOST_PATTERNS = "${params.PUBLIC_CHECK_FORBIDDEN_HOST_PATTERNS}"
       }
       steps {
         script {
           try {
-            sh '''#!/usr/bin/env bash
-set -euo pipefail
-mkdir -p deploy-evidence
-{
-  echo "hostname=$(hostname)"
-  echo "fqdn=$(hostname -f 2>/dev/null || true)"
-  hostnamectl 2>/dev/null || true
-} | tee deploy-evidence/public-check-host-proof.txt
-
-if [ -n "${PUBLIC_CHECK_FORBIDDEN_HOST_PATTERNS:-}" ] && grep -Eiq "$PUBLIC_CHECK_FORBIDDEN_HOST_PATTERNS" deploy-evidence/public-check-host-proof.txt; then
-  echo "Public health check appears to be running on a forbidden host/controller pattern: ${PUBLIC_CHECK_FORBIDDEN_HOST_PATTERNS}" | tee deploy-evidence/public-health-failure.txt
-  exit 31
-fi
-
-curl --fail --show-error --silent --location --max-time "$PUBLIC_HEALTHCHECK_TIMEOUT_SECONDS" "$PUBLIC_HEALTHCHECK_URL" | tee deploy-evidence/public-health-response.txt
+            withEnv([
+              'SMOKE_SCOPE=same-server',
+              'EXTERNAL_PROOF=false',
+              'SMOKE_EVIDENCE_DIR=deploy-evidence'
+            ]) {
+              echo 'Same-server public URL/API smoke records public-smoke-scope.txt and deploy-script.log with scope=same-server external-proof=false.'
+              sh '''#!/usr/bin/env bash
+set -Eeuo pipefail
+PATH="$PWD/.jenkins-uv/bin:$PATH"
+bash scripts/deploy/public-gif-smoke.sh
 '''
+            }
           } catch (err) {
-            env.PUBLIC_HEALTH_FAILED = 'true'
-            echo "External public health failed; rollback stage will run on the build agent. ${err}"
+            env.POST_DEPLOY_SMOKE_FAILED = 'true'
+            echo "Post-deploy public smoke failed; rollback stage will run on the build agent. ${err}"
           } finally {
             archiveArtifacts artifacts: 'deploy-evidence/**', allowEmptyArchive: true, fingerprint: true
           }
@@ -371,12 +364,12 @@ curl --fail --show-error --silent --location --max-time "$PUBLIC_HEALTHCHECK_TIM
       }
     }
 
-    stage('Auto Rollback After Public Health Failure') {
+    stage('Auto Rollback After Post-Deploy Smoke Failure') {
       when {
         allOf {
           expression { return params.RUN_DEPLOY }
           expression { return !params.DEPLOY_DRY_RUN }
-          expression { return env.PUBLIC_HEALTH_FAILED == 'true' }
+          expression { return env.POST_DEPLOY_SMOKE_FAILED == 'true' }
         }
       }
       steps {
@@ -406,7 +399,7 @@ curl --fail --show-error --silent --location --max-time "$PUBLIC_HEALTHCHECK_TIM
               sh '''#!/usr/bin/env bash
 set -euo pipefail
 mkdir -p deploy-evidence
-bash "$ROLLBACK_SCRIPT" | tee deploy-evidence/rollback-after-public-health.txt
+bash "$ROLLBACK_SCRIPT" 2>&1 | tee deploy-evidence/rollback-after-post-deploy-smoke.txt
 '''
             }
           }
@@ -419,16 +412,16 @@ bash "$ROLLBACK_SCRIPT" | tee deploy-evidence/rollback-after-public-health.txt
       }
     }
 
-    stage('Fail Deployment After Public Health Rollback') {
+    stage('Fail Deployment After Post-Deploy Smoke Rollback') {
       when {
         allOf {
           expression { return params.RUN_DEPLOY }
           expression { return !params.DEPLOY_DRY_RUN }
-          expression { return env.PUBLIC_HEALTH_FAILED == 'true' }
+          expression { return env.POST_DEPLOY_SMOKE_FAILED == 'true' }
         }
       }
       steps {
-        error('External public health failed. Jenkins attempted rollback; failing the original deployment build by design.')
+        error('Post-deploy public smoke failed. Jenkins attempted rollback; failing the original deployment build by design.')
       }
     }
 
@@ -441,7 +434,7 @@ bash "$ROLLBACK_SCRIPT" | tee deploy-evidence/rollback-after-public-health.txt
 
   post {
     always {
-      echo 'Jenkins deployment pipeline finished. See archived image/deploy/health/rollback evidence for proof.'
+      echo 'Jenkins deployment pipeline finished. See archived image/deploy/local-health/same-server-public-smoke/rollback evidence for proof.'
     }
   }
 }
