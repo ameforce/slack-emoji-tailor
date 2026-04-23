@@ -149,6 +149,21 @@ def test_jenkinsfile_declares_required_parameters_and_core_stages() -> None:
         _stage_body(jenkinsfile, stage_name)
 
 
+def test_jenkinsfile_checkout_cleans_workspace_to_prevent_stale_evidence() -> None:
+    _require_implementation_lanes_integrated()
+    jenkinsfile = _read("Jenkinsfile")
+    checkout = _stage_body(jenkinsfile, "Checkout")
+
+    assert "deleteDir()" in checkout, (
+        "Checkout must clean the Jenkins workspace before checkout so dry-run builds "
+        "cannot archive stale deploy-evidence from a previous live deployment"
+    )
+    assert checkout.index("deleteDir()") < checkout.index("checkout scm"), (
+        "Workspace cleanup must happen before SCM checkout and before any artifacts "
+        "such as deploy-evidence/** can be archived"
+    )
+
+
 def test_deploy_artifacts_use_lf_line_endings() -> None:
     _require_implementation_lanes_integrated()
 
