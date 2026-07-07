@@ -10,6 +10,7 @@ Use this checklist before enabling or re-running the Jenkins branch-routed deplo
 - [ ] Jenkins fails fast when the Docker-capable toolchain is absent; `remote-build` mode is allowed only when the Jenkins build agent is the approved Docker-capable deploy host and all actions still run from Jenkins.
 - [ ] If `uv` is not preinstalled on that approved agent, the Jenkins preflight may bootstrap it into the workspace-local `.jenkins-uv` directory; it must not install secrets or mutate system Python.
 - [ ] The deployed `IMAGE_REF` is an immutable tag or digest. Moving aliases such as `dev-latest` and `prod-latest` may exist only as convenience aliases and must never be the deployment ref.
+- [ ] Project-scoped image cleanup is enabled only for this repository's same-environment image tags. It must preserve the running container image, `current-image-ref`, `previous-image-ref`, and recent image tags; it must not use `docker image prune`, `docker system prune`, or forced image removal.
 
 ## Registry credential handling
 
@@ -40,6 +41,7 @@ Use this checklist before enabling or re-running the Jenkins branch-routed deplo
 
 - [ ] Before activation, Jenkins records previous and current image markers in the remote deploy path.
 - [ ] `scripts/deploy/jenkins-enm-deploy.sh` runs compose mutations under remote `flock` to prevent concurrent writes.
+- [ ] Successful deploys write `.deploy-state/image-cleanup.txt` and include its image-cleanup summary in the archived deploy script log so operators can see which same-environment image tags were removed or skipped.
 - [ ] If local health or same-server public URL/API smoke fails after activation and `PREVIOUS_IMAGE` exists, Jenkins invokes the rollback path and archives rollback evidence.
 - [ ] If no previous image exists, Jenkins records `NO_PREVIOUS_IMAGE_AVAILABLE`, runs `docker compose down` for the failed first install, archives evidence, and fails the build without claiming success.
 - [ ] Rollback remains Jenkins-mediated; do not perform manual server deployment commands as the success path.

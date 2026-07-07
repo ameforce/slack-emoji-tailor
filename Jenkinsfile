@@ -21,6 +21,8 @@ pipeline {
 
     choice(name: 'IMAGE_DISTRIBUTION_MODE', choices: ['remote-build', 'registry'], description: 'remote-build builds the image on the Docker-capable Jenkins agent that is also the deploy host; registry pushes/pulls through REGISTRY_* credentials.')
     string(name: 'LOCAL_IMAGE_REPOSITORY', defaultValue: 'slack-emoji-tailor', description: 'Local Docker image repository used when IMAGE_DISTRIBUTION_MODE=remote-build.')
+    booleanParam(name: 'DEPLOY_IMAGE_CLEANUP_ENABLED', defaultValue: true, description: 'When true, run project-scoped image cleanup after a successful deploy.')
+    string(name: 'DEPLOY_IMAGE_RETENTION_COUNT', defaultValue: '5', description: 'Minimum recent same-environment image tags to keep in addition to running/current/previous rollback images.')
     string(name: 'REGISTRY_URL', defaultValue: '', description: 'Docker registry hostname for registry mode, for example ghcr.io or registry.example.com.')
     string(name: 'REGISTRY_IMAGE', defaultValue: 'enm/slack-emoji-tailor', description: 'Registry image path without tag. Combined with REGISTRY_URL and immutable build tag in registry mode.')
     string(name: 'REGISTRY_CREDENTIALS_ID', defaultValue: '', description: 'Jenkins username/password credential ID for registry push in registry mode.')
@@ -41,6 +43,7 @@ pipeline {
     DOCKER_BUILDKIT = '1'
     DEPLOY_COMPOSE_FILE = 'docker-compose.dev.deploy.yml'
     DEPLOY_SCRIPT = 'scripts/deploy/jenkins-enm-deploy.sh'
+    IMAGE_CLEANUP_SCRIPT = 'scripts/deploy/cleanup-project-images.sh'
     ROLLBACK_SCRIPT = 'scripts/deploy/jenkins-enm-rollback.sh'
   }
 
@@ -66,10 +69,10 @@ pipeline {
           def canonicalPublicHealthcheckUrl = prodTarget ? 'https://emoji.enmsoftware.com/healthz' : 'https://dev.emoji.enmsoftware.com/healthz'
           env.EFFECTIVE_DEPLOY_HOST = valueOrDefault(params.DEPLOY_HOST, 'enmsoftware.com')
           env.EFFECTIVE_DEPLOY_SSH_USER = valueOrDefault(params.DEPLOY_SSH_USER, 'ameforce')
-          env.EFFECTIVE_DEPLOY_PATH = branchTargetValue('DEPLOY_PATH', params.DEPLOY_PATH, canonicalDeployPath, env.DEPLOY_BRANCH)
-          env.EFFECTIVE_DEPLOY_APP_PORT = branchTargetValue('DEPLOY_APP_PORT', params.DEPLOY_APP_PORT, canonicalDeployAppPort, env.DEPLOY_BRANCH)
-          env.EFFECTIVE_DEPLOY_COMPOSE_PROJECT = branchTargetValue('DEPLOY_COMPOSE_PROJECT', params.DEPLOY_COMPOSE_PROJECT, canonicalDeployComposeProject, env.DEPLOY_BRANCH)
-          env.PUBLIC_HEALTHCHECK_URL_RESOLVED = branchTargetValue('PUBLIC_HEALTHCHECK_URL', params.PUBLIC_HEALTHCHECK_URL, canonicalPublicHealthcheckUrl, env.DEPLOY_BRANCH)
+          env.EFFECTIVE_DEPLOY_PATH = validateBranchTargetValue('DEPLOY_PATH', params.DEPLOY_PATH, canonicalDeployPath, env.DEPLOY_BRANCH)
+          env.EFFECTIVE_DEPLOY_APP_PORT = validateBranchTargetValue('DEPLOY_APP_PORT', params.DEPLOY_APP_PORT, canonicalDeployAppPort, env.DEPLOY_BRANCH)
+          env.EFFECTIVE_DEPLOY_COMPOSE_PROJECT = validateBranchTargetValue('DEPLOY_COMPOSE_PROJECT', params.DEPLOY_COMPOSE_PROJECT, canonicalDeployComposeProject, env.DEPLOY_BRANCH)
+          env.PUBLIC_HEALTHCHECK_URL_RESOLVED = validateBranchTargetValue('PUBLIC_HEALTHCHECK_URL', params.PUBLIC_HEALTHCHECK_URL, canonicalPublicHealthcheckUrl, env.DEPLOY_BRANCH)
           env.LOCAL_HEALTHCHECK_URL_RESOLVED = valueOrDefault(params.LOCAL_HEALTHCHECK_URL, "http://127.0.0.1:${env.EFFECTIVE_DEPLOY_APP_PORT}/healthz")
 
           def imageMode = valueOrDefault(params.IMAGE_DISTRIBUTION_MODE, 'remote-build')
@@ -118,7 +121,7 @@ PY
             error('Deploy IMAGE_REF must be immutable and must not be a moving latest alias.')
           }
 
-          writeFile file: 'image-ref.txt', text: "IMAGE_REF=${env.IMAGE_REF}\nMOVING_ALIAS_REF=${env.MOVING_ALIAS_REF}\nIMAGE_DISTRIBUTION_MODE=${env.IMAGE_DISTRIBUTION_MODE_RESOLVED}\nDEPLOY_ENVIRONMENT=${env.DEPLOY_ENVIRONMENT}\nGIT_COMMIT=${env.GIT_COMMIT_RESOLVED}\nGIT_TAG_VERSION=${env.GIT_TAG_VERSION}\nAPP_DISPLAY_VERSION=${env.APP_DISPLAY_VERSION}\nBRANCH=${env.DEPLOY_BRANCH}\n"
+          writeFile file: 'image-ref.txt', text: "IMAGE_REF=${env.IMAGE_REF}\nMOVING_ALIAS_REF=${env.MOVING_ALIAS_REF}\nIMAGE_DISTRIBUTION_MODE=${env.IMAGE_DISTRIBUTION_MODE_RESOLVED}\nDEPLOY_IMAGE_CLEANUP_ENABLED=${params.DEPLOY_IMAGE_CLEANUP_ENABLED}\nDEPLOY_IMAGE_RETENTION_COUNT=${params.DEPLOY_IMAGE_RETENTION_COUNT}\nDEPLOY_ENVIRONMENT=${env.DEPLOY_ENVIRONMENT}\nGIT_COMMIT=${env.GIT_COMMIT_RESOLVED}\nGIT_TAG_VERSION=${env.GIT_TAG_VERSION}\nAPP_DISPLAY_VERSION=${env.APP_DISPLAY_VERSION}\nBRANCH=${env.DEPLOY_BRANCH}\n"
           echo "Resolved ${env.DEPLOY_ENVIRONMENT} immutable image ref: ${env.IMAGE_REF}"
           echo "Resolved git tag version: ${env.GIT_TAG_VERSION}"
           echo "Resolved display version: ${env.APP_DISPLAY_VERSION}"
@@ -221,6 +224,13 @@ docker logout "$REGISTRY_URL" >/dev/null 2>&1 || true
           if (port < 1024 || port > 65535) {
             error('DEPLOY_APP_PORT must be in the non-privileged TCP port range 1024-65535.')
           }
+          if (!(params.DEPLOY_IMAGE_RETENTION_COUNT ==~ /^[0-9]+$/)) {
+            error('DEPLOY_IMAGE_RETENTION_COUNT must be numeric.')
+          }
+          def imageRetentionCount = params.DEPLOY_IMAGE_RETENTION_COUNT.toInteger()
+          if (imageRetentionCount < 2 || imageRetentionCount > 50) {
+            error('DEPLOY_IMAGE_RETENTION_COUNT must be between 2 and 50.')
+          }
 
           def allowedBranches = params.DEPLOY_ALLOWED_BRANCHES.split(',').collect { it.trim() }.findAll { it }
           def canDeployBranch = allowedBranches.isEmpty() || allowedBranches.contains(env.DEPLOY_BRANCH)
@@ -243,6 +253,8 @@ cat > deploy-preview.txt <<PREVIEW
 image_ref=${IMAGE_REF}
 moving_alias_ref=${MOVING_ALIAS_REF}
 image_distribution_mode=${IMAGE_DISTRIBUTION_MODE_RESOLVED}
+image_cleanup_enabled=${DEPLOY_IMAGE_CLEANUP_ENABLED}
+image_retention_count=${DEPLOY_IMAGE_RETENTION_COUNT}
 deploy_environment=${DEPLOY_ENVIRONMENT}
 deploy_dry_run=${DEPLOY_DRY_RUN}
 target=${EFFECTIVE_DEPLOY_SSH_USER}@${EFFECTIVE_DEPLOY_HOST}
@@ -294,6 +306,9 @@ cat deploy-preview.txt
               "REGISTRY_URL=${params.REGISTRY_URL}",
               "REGISTRY_PULL_CREDENTIALS_ID=${params.REGISTRY_PULL_CREDENTIALS_ID}",
               "SKIP_IMAGE_PULL=${env.SKIP_IMAGE_PULL_RESOLVED}",
+              "LOCAL_IMAGE_CLEANUP_SCRIPT=${env.IMAGE_CLEANUP_SCRIPT}",
+              "DEPLOY_IMAGE_CLEANUP_ENABLED=${params.DEPLOY_IMAGE_CLEANUP_ENABLED}",
+              "DEPLOY_IMAGE_RETENTION_COUNT=${params.DEPLOY_IMAGE_RETENTION_COUNT}",
               'DEPLOY_DRY_RUN=false'
             ]) {
               sh '''#!/usr/bin/env bash
@@ -444,7 +459,7 @@ String valueOrDefault(Object value, String fallback) {
   return normalized ? normalized : fallback
 }
 
-String branchTargetValue(String name, Object value, String canonical, String branchName) {
+def validateBranchTargetValue(String name, Object value, String canonical, String branchName) {
   def normalized = value == null ? '' : value.toString().trim()
   if (!normalized) {
     return canonical

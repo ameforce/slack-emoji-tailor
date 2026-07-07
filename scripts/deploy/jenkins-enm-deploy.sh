@@ -58,6 +58,7 @@ is_immutable_image_ref "$IMAGE_REF" || fail "IMAGE_REF must be an immutable tag 
 
 DEPLOY_COMPOSE_FILE=${DEPLOY_COMPOSE_FILE:-docker-compose.dev.deploy.yml}
 LOCAL_COMPOSE_FILE=${LOCAL_COMPOSE_FILE:-$DEPLOY_COMPOSE_FILE}
+LOCAL_IMAGE_CLEANUP_SCRIPT=${LOCAL_IMAGE_CLEANUP_SCRIPT:-scripts/deploy/cleanup-project-images.sh}
 DEPLOY_ENV_FILE=${DEPLOY_ENV_FILE:-.env.dev}
 DEPLOY_COMPOSE_PROJECT=${DEPLOY_COMPOSE_PROJECT:-slack-emoji-tailor-dev}
 APP_HOST_PORT=${APP_HOST_PORT:-${DEPLOY_APP_PORT:-18082}}
@@ -81,10 +82,19 @@ if [ -z "${HEALTH_RETRIES:-}" ]; then
 fi
 SKIP_COMPOSE_UPLOAD=${SKIP_COMPOSE_UPLOAD:-false}
 SKIP_IMAGE_PULL=${SKIP_IMAGE_PULL:-false}
+DEPLOY_IMAGE_CLEANUP_ENABLED=${DEPLOY_IMAGE_CLEANUP_ENABLED:-true}
+DEPLOY_IMAGE_RETENTION_COUNT=${DEPLOY_IMAGE_RETENTION_COUNT:-5}
 SSH_TARGET=${DEPLOY_SSH_USER}@${DEPLOY_HOST}
 SSH_OPTS=${SSH_OPTS:-${DEPLOY_SSH_OPTS:-}}
 DEPLOY_SSH_KEY=${DEPLOY_SSH_KEY:-}
 HAS_PULL_PASSWORD=0
+
+case "$DEPLOY_IMAGE_RETENTION_COUNT" in
+  ""|*[!0-9]*) fail "DEPLOY_IMAGE_RETENTION_COUNT must be numeric" ;;
+esac
+if [ "$DEPLOY_IMAGE_RETENTION_COUNT" -lt 2 ]; then
+  fail "DEPLOY_IMAGE_RETENTION_COUNT must be at least 2"
+fi
 
 if [ -n "$REGISTRY_PULL_USERNAME" ] || [ -n "$REGISTRY_PULL_PASSWORD" ]; then
   require_env REGISTRY_URL
@@ -109,6 +119,9 @@ Deploy dry-run preview:
   marker dir: ${DEPLOY_MARKER_DIR}
   remote docker config: ${REMOTE_DOCKER_CONFIG}
   skip image pull: ${SKIP_IMAGE_PULL}
+  image cleanup enabled: ${DEPLOY_IMAGE_CLEANUP_ENABLED}
+  image cleanup script: ${LOCAL_IMAGE_CLEANUP_SCRIPT}
+  image retention count: ${DEPLOY_IMAGE_RETENTION_COUNT}
 DRYRUN
   exit 0
 fi
@@ -141,6 +154,14 @@ if ! truthy "$SKIP_COMPOSE_UPLOAD"; then
   remote_run "cat > $(shell_quote "$incoming_compose_path")" <"$LOCAL_COMPOSE_FILE"
 fi
 
+incoming_cleanup_script_path=
+if truthy "$DEPLOY_IMAGE_CLEANUP_ENABLED"; then
+  [ -f "$LOCAL_IMAGE_CLEANUP_SCRIPT" ] || fail "image cleanup script not found: ${LOCAL_IMAGE_CLEANUP_SCRIPT}"
+  incoming_cleanup_script_path="${DEPLOY_PATH}/.cleanup-project-images.sh.incoming.$(date +%s).$$"
+  log "uploading image cleanup script to ${SSH_TARGET}:${incoming_cleanup_script_path}"
+  remote_run "cat > $(shell_quote "$incoming_cleanup_script_path")" <"$LOCAL_IMAGE_CLEANUP_SCRIPT"
+fi
+
 if [ "$HAS_PULL_PASSWORD" = "1" ]; then
   log "performing remote registry pull login with isolated Docker config"
   login_cmd="set -euo pipefail; mkdir -p $(shell_quote "$REMOTE_DOCKER_CONFIG"); chmod 700 $(shell_quote "$REMOTE_DOCKER_CONFIG"); docker --config $(shell_quote "$REMOTE_DOCKER_CONFIG") login $(shell_quote "$REGISTRY_URL") --username $(shell_quote "$REGISTRY_PULL_USERNAME") --password-stdin >/dev/null"
@@ -164,6 +185,9 @@ remote_args=(
   "$HEALTH_TIMEOUT_SECONDS"
   "$HAS_PULL_PASSWORD"
   "$SKIP_IMAGE_PULL"
+  "$incoming_cleanup_script_path"
+  "$DEPLOY_IMAGE_CLEANUP_ENABLED"
+  "$DEPLOY_IMAGE_RETENTION_COUNT"
 )
 quoted_remote_args=()
 for arg in "${remote_args[@]}"; do
@@ -174,8 +198,8 @@ log "starting remote deploy on ${SSH_TARGET}"
 remote_run "bash -s -- ${quoted_remote_args[*]}" <<'REMOTE_SCRIPT'
 set -Eeuo pipefail
 
-if [ "$#" -ne 16 ]; then
-  printf '[deploy:remote] ERROR: expected 16 args, got %s\n' "$#" >&2
+if [ "$#" -ne 19 ]; then
+  printf '[deploy:remote] ERROR: expected 19 args, got %s\n' "$#" >&2
   exit 2
 fi
 
@@ -195,6 +219,9 @@ health_sleep_seconds=${13}
 health_timeout_seconds=${14}
 has_pull_auth=${15}
 skip_image_pull=${16}
+incoming_cleanup_script_path=${17}
+image_cleanup_enabled=${18}
+image_retention_count=${19}
 
 log_remote() {
   printf '[deploy:remote] %s\n' "$*" >&2
@@ -211,6 +238,13 @@ truthy_remote() {
     *) return 1 ;;
   esac
 }
+
+case "$image_retention_count" in
+  ""|*[!0-9]*) fail_remote "DEPLOY_IMAGE_RETENTION_COUNT must be numeric" ;;
+esac
+if [ "$image_retention_count" -lt 2 ]; then
+  fail_remote "DEPLOY_IMAGE_RETENTION_COUNT must be at least 2"
+fi
 
 is_immutable_image_ref() {
   local ref=$1
@@ -346,6 +380,16 @@ case "$marker_dir" in
 esac
 mkdir -p "$marker_dir"
 
+cleanup_script_path="${deploy_path}/.deploy-image-cleanup.sh"
+if truthy_remote "$image_cleanup_enabled"; then
+  [ -n "$incoming_cleanup_script_path" ] || fail_remote "image cleanup is enabled but no cleanup script was uploaded"
+  [ -f "$incoming_cleanup_script_path" ] || fail_remote "incoming image cleanup script missing: ${incoming_cleanup_script_path}"
+  mv "$incoming_cleanup_script_path" "$cleanup_script_path"
+  chmod 700 "$cleanup_script_path"
+else
+  printf 'project-scoped image cleanup disabled\n' >"$marker_dir/image-cleanup.txt"
+fi
+
 previous_image_ref=$(read_first_file "$marker_dir/current-image-ref" "$marker_dir/current_image_ref" || true)
 if [ -z "$previous_image_ref" ]; then
   previous_image_ref=$(read_env_image_ref "$env_file" || true)
@@ -385,6 +429,12 @@ fi
 printf '%s\n' "$image_ref" >"$marker_dir/current-image-ref"
 date -u +%Y-%m-%dT%H:%M:%SZ >"$marker_dir/last-deploy-at"
 capture_evidence "$marker_dir" "deploy"
+if truthy_remote "$image_cleanup_enabled"; then
+  if ! "$cleanup_script_path" "$marker_dir" "$image_ref" "$previous_image_ref" "$image_cleanup_enabled" "$image_retention_count"; then
+    log_remote "image cleanup failed after successful deploy; deployment remains active, see ${marker_dir}/image-cleanup.txt"
+  fi
+fi
+sed 's/^/[deploy:remote:image-cleanup] /' "$marker_dir/image-cleanup.txt" >&2 || true
 log_remote "deploy completed with IMAGE_REF=${image_ref}"
 REMOTE_SCRIPT
 
