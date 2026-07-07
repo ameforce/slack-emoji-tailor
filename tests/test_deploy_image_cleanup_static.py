@@ -12,11 +12,12 @@ def _read(relative_path: str) -> str:
 
 def test_deploy_cleanup_is_project_scoped_and_preserves_rollback_images() -> None:
     deploy_script = _read("scripts/deploy/jenkins-enm-deploy.sh")
+    cleanup_script = _read("scripts/deploy/cleanup-project-images.sh")
     rollback_script = _read("scripts/deploy/jenkins-enm-rollback.sh")
     jenkinsfile = _read("Jenkinsfile")
     deploy_doc = _read("docs/deploy/jenkins-dev.md").lower()
     checklist = _read("docs/deploy/jenkins-dev-security-checklist.md").lower()
-    combined_scripts = f"{deploy_script}\n{rollback_script}"
+    combined_scripts = f"{deploy_script}\n{cleanup_script}\n{rollback_script}"
     combined_docs = f"{deploy_doc}\n{checklist}"
 
     forbidden_cleanup = [
@@ -32,6 +33,7 @@ def test_deploy_cleanup_is_project_scoped_and_preserves_rollback_images() -> Non
         )
 
     required_jenkins_policy = [
+        "IMAGE_CLEANUP_SCRIPT",
         "DEPLOY_IMAGE_CLEANUP_ENABLED",
         "DEPLOY_IMAGE_RETENTION_COUNT",
         "Minimum recent same-environment image tags",
@@ -44,11 +46,10 @@ def test_deploy_cleanup_is_project_scoped_and_preserves_rollback_images() -> Non
     )
 
     required_deploy_policy = [
-        "cleanup_project_images",
-        "image_cleanup_tag_prefix",
-        "docker image ls",
-        'docker image rm "$candidate_ref"',
-        "docker ps -q",
+        "LOCAL_IMAGE_CLEANUP_SCRIPT",
+        "incoming_cleanup_script_path",
+        ".deploy-image-cleanup.sh",
+        '"$cleanup_script_path"',
         "current-image-ref",
         "previous-image-ref",
         "DEPLOY_IMAGE_RETENTION_COUNT",
@@ -61,11 +62,26 @@ def test_deploy_cleanup_is_project_scoped_and_preserves_rollback_images() -> Non
         f"deploy script is missing conservative image cleanup policy: {missing_deploy_policy}"
     )
 
-    assert deploy_script.index("cleanup_project_images") < deploy_script.rindex(
-        "cleanup_project_images"
+    required_cleanup_policy = [
+        "image_cleanup_tag_prefix",
+        "docker image ls",
+        'docker image rm "$candidate_ref"',
+        "docker ps -q",
+        "current-image-ref",
+        "previous-image-ref",
+        "running container image IDs",
+        "recent image tags",
+    ]
+    missing_cleanup_policy = [
+        item for item in required_cleanup_policy if item not in cleanup_script
+    ]
+    assert not missing_cleanup_policy, (
+        f"cleanup helper is missing conservative image policy: {missing_cleanup_policy}"
     )
+
+    assert b"\r\n" not in (ROOT / "scripts/deploy/cleanup-project-images.sh").read_bytes()
     assert deploy_script.index("printf '%s\\n' \"$image_ref\" >\"$marker_dir/current-image-ref\"") < deploy_script.rindex(
-        "cleanup_project_images"
+        '"$cleanup_script_path"'
     ), "image cleanup must run only after the new deployment is marked current"
 
     required_docs = [

@@ -58,6 +58,7 @@ is_immutable_image_ref "$IMAGE_REF" || fail "IMAGE_REF must be an immutable tag 
 
 DEPLOY_COMPOSE_FILE=${DEPLOY_COMPOSE_FILE:-docker-compose.dev.deploy.yml}
 LOCAL_COMPOSE_FILE=${LOCAL_COMPOSE_FILE:-$DEPLOY_COMPOSE_FILE}
+LOCAL_IMAGE_CLEANUP_SCRIPT=${LOCAL_IMAGE_CLEANUP_SCRIPT:-scripts/deploy/cleanup-project-images.sh}
 DEPLOY_ENV_FILE=${DEPLOY_ENV_FILE:-.env.dev}
 DEPLOY_COMPOSE_PROJECT=${DEPLOY_COMPOSE_PROJECT:-slack-emoji-tailor-dev}
 APP_HOST_PORT=${APP_HOST_PORT:-${DEPLOY_APP_PORT:-18082}}
@@ -119,6 +120,7 @@ Deploy dry-run preview:
   remote docker config: ${REMOTE_DOCKER_CONFIG}
   skip image pull: ${SKIP_IMAGE_PULL}
   image cleanup enabled: ${DEPLOY_IMAGE_CLEANUP_ENABLED}
+  image cleanup script: ${LOCAL_IMAGE_CLEANUP_SCRIPT}
   image retention count: ${DEPLOY_IMAGE_RETENTION_COUNT}
 DRYRUN
   exit 0
@@ -152,6 +154,14 @@ if ! truthy "$SKIP_COMPOSE_UPLOAD"; then
   remote_run "cat > $(shell_quote "$incoming_compose_path")" <"$LOCAL_COMPOSE_FILE"
 fi
 
+incoming_cleanup_script_path=
+if truthy "$DEPLOY_IMAGE_CLEANUP_ENABLED"; then
+  [ -f "$LOCAL_IMAGE_CLEANUP_SCRIPT" ] || fail "image cleanup script not found: ${LOCAL_IMAGE_CLEANUP_SCRIPT}"
+  incoming_cleanup_script_path="${DEPLOY_PATH}/.cleanup-project-images.sh.incoming.$(date +%s).$$"
+  log "uploading image cleanup script to ${SSH_TARGET}:${incoming_cleanup_script_path}"
+  remote_run "cat > $(shell_quote "$incoming_cleanup_script_path")" <"$LOCAL_IMAGE_CLEANUP_SCRIPT"
+fi
+
 if [ "$HAS_PULL_PASSWORD" = "1" ]; then
   log "performing remote registry pull login with isolated Docker config"
   login_cmd="set -euo pipefail; mkdir -p $(shell_quote "$REMOTE_DOCKER_CONFIG"); chmod 700 $(shell_quote "$REMOTE_DOCKER_CONFIG"); docker --config $(shell_quote "$REMOTE_DOCKER_CONFIG") login $(shell_quote "$REGISTRY_URL") --username $(shell_quote "$REGISTRY_PULL_USERNAME") --password-stdin >/dev/null"
@@ -175,6 +185,7 @@ remote_args=(
   "$HEALTH_TIMEOUT_SECONDS"
   "$HAS_PULL_PASSWORD"
   "$SKIP_IMAGE_PULL"
+  "$incoming_cleanup_script_path"
   "$DEPLOY_IMAGE_CLEANUP_ENABLED"
   "$DEPLOY_IMAGE_RETENTION_COUNT"
 )
@@ -187,8 +198,8 @@ log "starting remote deploy on ${SSH_TARGET}"
 remote_run "bash -s -- ${quoted_remote_args[*]}" <<'REMOTE_SCRIPT'
 set -Eeuo pipefail
 
-if [ "$#" -ne 18 ]; then
-  printf '[deploy:remote] ERROR: expected 18 args, got %s\n' "$#" >&2
+if [ "$#" -ne 19 ]; then
+  printf '[deploy:remote] ERROR: expected 19 args, got %s\n' "$#" >&2
   exit 2
 fi
 
@@ -208,8 +219,9 @@ health_sleep_seconds=${13}
 health_timeout_seconds=${14}
 has_pull_auth=${15}
 skip_image_pull=${16}
-image_cleanup_enabled=${17}
-image_retention_count=${18}
+incoming_cleanup_script_path=${17}
+image_cleanup_enabled=${18}
+image_retention_count=${19}
 
 log_remote() {
   printf '[deploy:remote] %s\n' "$*" >&2
@@ -306,156 +318,6 @@ capture_evidence() {
   docker compose -p "$compose_project" -f "$compose_file" --env-file "$env_file" logs --tail=120 >"$marker_dir/${prefix}-logs.txt" 2>&1 || true
 }
 
-image_repository_from_ref() {
-  local ref=$1
-  local last_path
-  case "$ref" in
-    *@sha256:*)
-      printf '%s\n' "${ref%@sha256:*}"
-      return 0
-      ;;
-  esac
-  last_path=${ref##*/}
-  case "$last_path" in
-    *:*)
-      printf '%s\n' "${ref%:*}"
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-image_cleanup_tag_prefix() {
-  local ref=$1
-  local last_path tag
-  case "$ref" in
-    *@sha256:*) return 1 ;;
-  esac
-  last_path=${ref##*/}
-  case "$last_path" in
-    *:*) tag=${last_path##*:} ;;
-    *) return 1 ;;
-  esac
-  case "$tag" in
-    dev-*) printf 'dev-' ;;
-    prod-*) printf 'prod-' ;;
-    *) return 1 ;;
-  esac
-}
-
-append_image_id_if_present() {
-  local ref=$1
-  local output_file=$2
-  local image_id
-  [ -n "$ref" ] || return 0
-  image_id=$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)
-  if [ -n "$image_id" ]; then
-    printf '%s\n' "$image_id" >>"$output_file"
-  fi
-}
-
-cleanup_project_images() {
-  local marker_dir=$1
-  local current_ref=$2
-  local previous_ref=$3
-  local cleanup_log="$marker_dir/image-cleanup.txt"
-  local repository tag_prefix candidates_file preserve_ids_file containers_file
-  local candidate_ref candidate_id retained_count removed_count skipped_count
-
-  if ! truthy_remote "$image_cleanup_enabled"; then
-    printf 'project-scoped image cleanup disabled\n' >"$cleanup_log"
-    sed 's/^/[deploy:remote:image-cleanup] /' "$cleanup_log" >&2 || true
-    return 0
-  fi
-
-  repository=$(image_repository_from_ref "$current_ref" || true)
-  tag_prefix=$(image_cleanup_tag_prefix "$current_ref" || true)
-  if [ -z "$repository" ] || [ -z "$tag_prefix" ]; then
-    {
-      printf 'project-scoped image cleanup skipped\n'
-      printf 'reason=unsupported image ref for same-environment tag cleanup\n'
-      printf 'image_ref=%s\n' "$current_ref"
-    } >"$cleanup_log"
-    sed 's/^/[deploy:remote:image-cleanup] /' "$cleanup_log" >&2 || true
-    return 0
-  fi
-
-  candidates_file=$(mktemp "$marker_dir/image-cleanup-candidates.XXXXXX")
-  preserve_ids_file=$(mktemp "$marker_dir/image-cleanup-preserve-ids.XXXXXX")
-  containers_file=$(mktemp "$marker_dir/image-cleanup-containers.XXXXXX")
-  : >"$preserve_ids_file"
-
-  {
-    printf 'project-scoped image cleanup\n'
-    printf 'repository=%s\n' "$repository"
-    printf 'same_environment_tag_prefix=%s\n' "$tag_prefix"
-    printf 'retention_count=%s\n' "$image_retention_count"
-    printf 'preserves=current-image-ref, previous-image-ref, running container image IDs, and recent image tags\n'
-  } >"$cleanup_log"
-
-  if ! docker image ls "$repository" --format '{{.Repository}}:{{.Tag}}' >"$candidates_file.raw" 2>>"$cleanup_log"; then
-    printf 'docker image ls failed; cleanup skipped\n' >>"$cleanup_log"
-    sed 's/^/[deploy:remote:image-cleanup] /' "$cleanup_log" >&2 || true
-    rm -f "$candidates_file" "$candidates_file.raw" "$preserve_ids_file" "$containers_file"
-    return 0
-  fi
-  while IFS= read -r candidate_ref; do
-    case "$candidate_ref" in
-      "$repository:$tag_prefix"*) printf '%s\n' "$candidate_ref" ;;
-    esac
-  done <"$candidates_file.raw" >"$candidates_file"
-  rm -f "$candidates_file.raw"
-
-  append_image_id_if_present "$current_ref" "$preserve_ids_file"
-  append_image_id_if_present "$previous_ref" "$preserve_ids_file"
-
-  if docker ps -q >"$containers_file" 2>>"$cleanup_log"; then
-    while IFS= read -r container_id; do
-      [ -n "$container_id" ] || continue
-      docker inspect --format '{{.Image}}' "$container_id" >>"$preserve_ids_file" 2>>"$cleanup_log" || true
-    done <"$containers_file"
-  else
-    printf 'docker ps failed; running-container preservation could not be expanded\n' >>"$cleanup_log"
-  fi
-
-  retained_count=0
-  while IFS= read -r candidate_ref; do
-    [ -n "$candidate_ref" ] || continue
-    append_image_id_if_present "$candidate_ref" "$preserve_ids_file"
-    retained_count=$((retained_count + 1))
-    [ "$retained_count" -ge "$image_retention_count" ] && break
-  done <"$candidates_file"
-
-  removed_count=0
-  skipped_count=0
-  while IFS= read -r candidate_ref; do
-    [ -n "$candidate_ref" ] || continue
-    if [ "$candidate_ref" = "$current_ref" ] || [ "$candidate_ref" = "$previous_ref" ]; then
-      skipped_count=$((skipped_count + 1))
-      continue
-    fi
-    candidate_id=$(docker image inspect --format '{{.Id}}' "$candidate_ref" 2>>"$cleanup_log" || true)
-    if [ -z "$candidate_id" ] || grep -Fxq "$candidate_id" "$preserve_ids_file"; then
-      skipped_count=$((skipped_count + 1))
-      continue
-    fi
-    if docker image rm "$candidate_ref" >>"$cleanup_log" 2>&1; then
-      removed_count=$((removed_count + 1))
-    else
-      skipped_count=$((skipped_count + 1))
-    fi
-  done <"$candidates_file"
-
-  {
-    printf 'removed_tag_count=%s\n' "$removed_count"
-    printf 'skipped_tag_count=%s\n' "$skipped_count"
-  } >>"$cleanup_log"
-  sed 's/^/[deploy:remote:image-cleanup] /' "$cleanup_log" >&2 || true
-  rm -f "$candidates_file" "$preserve_ids_file" "$containers_file"
-}
-
 first_install_failure() {
   local marker_dir=$1
   local reason=$2
@@ -518,6 +380,16 @@ case "$marker_dir" in
 esac
 mkdir -p "$marker_dir"
 
+cleanup_script_path="${deploy_path}/.deploy-image-cleanup.sh"
+if truthy_remote "$image_cleanup_enabled"; then
+  [ -n "$incoming_cleanup_script_path" ] || fail_remote "image cleanup is enabled but no cleanup script was uploaded"
+  [ -f "$incoming_cleanup_script_path" ] || fail_remote "incoming image cleanup script missing: ${incoming_cleanup_script_path}"
+  mv "$incoming_cleanup_script_path" "$cleanup_script_path"
+  chmod 700 "$cleanup_script_path"
+else
+  printf 'project-scoped image cleanup disabled\n' >"$marker_dir/image-cleanup.txt"
+fi
+
 previous_image_ref=$(read_first_file "$marker_dir/current-image-ref" "$marker_dir/current_image_ref" || true)
 if [ -z "$previous_image_ref" ]; then
   previous_image_ref=$(read_env_image_ref "$env_file" || true)
@@ -557,7 +429,12 @@ fi
 printf '%s\n' "$image_ref" >"$marker_dir/current-image-ref"
 date -u +%Y-%m-%dT%H:%M:%SZ >"$marker_dir/last-deploy-at"
 capture_evidence "$marker_dir" "deploy"
-cleanup_project_images "$marker_dir" "$image_ref" "$previous_image_ref"
+if truthy_remote "$image_cleanup_enabled"; then
+  if ! "$cleanup_script_path" "$marker_dir" "$image_ref" "$previous_image_ref" "$image_cleanup_enabled" "$image_retention_count"; then
+    log_remote "image cleanup failed after successful deploy; deployment remains active, see ${marker_dir}/image-cleanup.txt"
+  fi
+fi
+sed 's/^/[deploy:remote:image-cleanup] /' "$marker_dir/image-cleanup.txt" >&2 || true
 log_remote "deploy completed with IMAGE_REF=${image_ref}"
 REMOTE_SCRIPT
 

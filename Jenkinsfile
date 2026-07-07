@@ -43,6 +43,7 @@ pipeline {
     DOCKER_BUILDKIT = '1'
     DEPLOY_COMPOSE_FILE = 'docker-compose.dev.deploy.yml'
     DEPLOY_SCRIPT = 'scripts/deploy/jenkins-enm-deploy.sh'
+    IMAGE_CLEANUP_SCRIPT = 'scripts/deploy/cleanup-project-images.sh'
     ROLLBACK_SCRIPT = 'scripts/deploy/jenkins-enm-rollback.sh'
   }
 
@@ -305,6 +306,7 @@ cat deploy-preview.txt
               "REGISTRY_URL=${params.REGISTRY_URL}",
               "REGISTRY_PULL_CREDENTIALS_ID=${params.REGISTRY_PULL_CREDENTIALS_ID}",
               "SKIP_IMAGE_PULL=${env.SKIP_IMAGE_PULL_RESOLVED}",
+              "LOCAL_IMAGE_CLEANUP_SCRIPT=${env.IMAGE_CLEANUP_SCRIPT}",
               "DEPLOY_IMAGE_CLEANUP_ENABLED=${params.DEPLOY_IMAGE_CLEANUP_ENABLED}",
               "DEPLOY_IMAGE_RETENTION_COUNT=${params.DEPLOY_IMAGE_RETENTION_COUNT}",
               'DEPLOY_DRY_RUN=false'
