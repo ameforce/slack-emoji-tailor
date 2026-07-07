@@ -32,6 +32,8 @@ Keep all secrets in Jenkins credentials, never in committed files or archived pl
 | `DEPLOY_SSH_CREDENTIALS_ID` | SSH credential Jenkins uses to reach `enm-server`. |
 | `IMAGE_DISTRIBUTION_MODE` | `remote-build` for local deploy-host images, or `registry` for registry push/pull. |
 | `LOCAL_IMAGE_REPOSITORY` | Local Docker repository used in `remote-build` mode. |
+| `DEPLOY_IMAGE_CLEANUP_ENABLED` | Enables project-scoped image cleanup after a successful deployment. |
+| `DEPLOY_IMAGE_RETENTION_COUNT` | Minimum recent same-environment image tags to preserve in addition to running/current/previous rollback images. |
 | `REGISTRY_CREDENTIALS_ID` | Registry push credential for the build agent when `IMAGE_DISTRIBUTION_MODE=registry`. |
 | `REGISTRY_PULL_CREDENTIALS_ID` | Optional registry pull credential for `enm-server`; when used, Jenkins-called scripts must use `docker login --password-stdin` with an isolated `DOCKER_CONFIG`. |
 | `REGISTRY_IMAGE` | Registry repository name for the application image. |
@@ -65,9 +67,10 @@ External proxy/TLS configuration must route `emoji.enmsoftware.com` to `127.0.0.
 6. Jenkins prepares a deploy preview containing the target host, path, compose project, image reference, ports, and health URLs.
 7. If deployment is enabled and not a dry run, Jenkins invokes the repo-managed deploy script over SSH.
 8. The Jenkins-called script updates the server-side env/markers under a remote lock, pulls `IMAGE_REF` when registry mode is enabled, starts the Compose project, and verifies server-local `/healthz`.
-9. Jenkins runs same-server public URL/API smoke against the branch-routed HTTPS origin with TLS verification enabled. This smoke invokes `scripts/deploy/public-gif-smoke.sh`, covers `/healthz`, the rendered UI frame-limit input, `/api/inspect`, and `/api/convert` frame-priority behavior, and archives `public-smoke-scope.txt` with `scope=same-server` and `external-proof=false`.
-10. For dev verification, run `SMOKE_SCOPE=external EXTERNAL_PROOF=true BASE_URL=https://dev.emoji.enmsoftware.com scripts/deploy/public-gif-smoke.sh` from a repo checkout outside `enm-server`. Record the resulting `public-smoke-scope.txt` as `smoke_scope=external`, `external_proof=true`, and true external proof for that deployment.
-11. Jenkins archives sanitized evidence and marks the deployment successful only if every Jenkins-side gate passes. Dev release signoff additionally requires the external smoke evidence from step 10.
+9. After a successful local health check and current marker update, the deploy script runs project-scoped image cleanup for the same repository and same-environment tag prefix only. It preserves the `current-image-ref`, `previous-image-ref`, every running container image ID, and the configured number of recent image tags before attempting plain `docker image rm` on older matching tags.
+10. Jenkins runs same-server public URL/API smoke against the branch-routed HTTPS origin with TLS verification enabled. This smoke invokes `scripts/deploy/public-gif-smoke.sh`, covers `/healthz`, the rendered UI frame-limit input, `/api/inspect`, and `/api/convert` frame-priority behavior, and archives `public-smoke-scope.txt` with `scope=same-server` and `external-proof=false`.
+11. For dev verification, run `SMOKE_SCOPE=external EXTERNAL_PROOF=true BASE_URL=https://dev.emoji.enmsoftware.com scripts/deploy/public-gif-smoke.sh` from a repo checkout outside `enm-server`. Record the resulting `public-smoke-scope.txt` as `smoke_scope=external`, `external_proof=true`, and true external proof for that deployment.
+12. Jenkins archives sanitized evidence and marks the deployment successful only if every Jenkins-side gate passes. Dev release signoff additionally requires the external smoke evidence from step 11.
 
 No step in the success path requires a person or Codex/OMX to run server-side app deployment commands manually.
 
@@ -82,6 +85,7 @@ Every deployment should archive or print sanitized evidence for:
 - deploy preview;
 - target host/path/project/port;
 - server-local health output;
+- project-scoped image cleanup output from `.deploy-state/image-cleanup.txt`;
 - same-server public URL/API smoke output, including `public-health-status.txt`, `public-index-response.html`, `public-inspect-summary.json`, `public-convert-frames-headers.txt`, `public-convert-tight-headers.txt`, and `public-smoke-scope.txt`;
 - dev signoff external smoke output from `scripts/deploy/public-gif-smoke.sh`, including `public-smoke-scope.txt` with `scope=external` / `external-proof=true` and the operator note `smoke_scope=external`, `external_proof=true`, `true external proof`;
 - previous/current image markers;
@@ -103,6 +107,7 @@ If this is a first install and no previous image marker exists, Jenkins should s
 
 - Do not commit `.env` files, registry tokens, SSH keys, or Jenkins secrets.
 - Do not deploy mutable tags such as `dev-latest` or `prod-latest`.
+- Do not use `docker image prune`, `docker system prune`, forced image removal, or repository-wide cleanup for deployment hygiene. Cleanup must stay project-scoped to same-environment image tags and preserve the running container, `current-image-ref`, `previous-image-ref`, and recent image tags.
 - Do not apply or edit DNS, Nginx, Certbot, or reverse-proxy configuration from this repo's Jenkins deployment.
 - Do not treat same-server public URL/API smoke as independent external reachability proof; it proves the public route from the available Jenkins agent only and must record `external-proof=false`.
 - Do run `scripts/deploy/public-gif-smoke.sh` from a non-ENM repo checkout for dev signoff when true external proof is required; record `smoke_scope=external`, `external_proof=true`, and `true external proof`.
